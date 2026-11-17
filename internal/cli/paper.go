@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/out"
@@ -23,6 +25,9 @@ func cmdPaper(args []string) int {
 		return paperStatus(args[1:])
 	case "stop":
 		return paperStop(args[1:])
+	case "_worker":
+		// Internal: detached fill loop (invoked by paper start).
+		return paperWorker(args[1:])
 	default:
 		return out.Fail("paper", fmt.Errorf("unknown verb %q", args[0]), 2)
 	}
@@ -31,30 +36,88 @@ func cmdPaper(args []string) int {
 func paperStart(args []string) int {
 	pos := positional(args)
 	if len(pos) < 1 {
-		return out.Fail("paper.start", fmt.Errorf("usage: cuwan paper start NAME"), 2)
+		return out.Fail("paper.start", fmt.Errorf("usage: cuwan paper start NAME [--foreground]"), 2)
 	}
-	bot, err := store.GetBot(pos[0])
+	name := pos[0]
+	bot, err := store.GetBot(name)
 	if err != nil {
 		return out.Fail("paper.start", err, 1)
 	}
-	_, drv, err := openNamedExchange(bot.Exchange, true)
+	exRec, err := store.GetExchange(bot.Exchange)
 	if err != nil {
 		return out.Fail("paper.start", err, 1)
 	}
-	// Force paper flag on driver config by reopening
-	exRec, _ := store.GetExchange(bot.Exchange)
-	drv, err = exchangex.Open(exchangex.Config{
+	drv, err := exchangex.Open(exchangex.Config{
 		Venue: exRec.Venue, Market: exRec.Market, Testnet: exRec.Testnet, Paper: true,
 	})
 	if err != nil {
 		return out.Fail("paper.start", err, 1)
 	}
-	s, err := paper.Start(context.Background(), bot, drv)
+
+	if flagBool(args, "--foreground") {
+		s, err := paper.Start(context.Background(), bot, drv)
+		if err != nil {
+			return out.Fail("paper.start", err, 1)
+		}
+		out.Print(os.Stdout, "paper.start", s.Runtime, fmt.Sprintf("paper started %s (%d levels) foreground", bot.Name, len(s.Runtime.Orders)))
+		waitSignals(s)
+		return 0
+	}
+
+	if alive, pid := paper.WorkerAlive(name); alive {
+		rt, _ := paper.Status(name)
+		out.Print(os.Stdout, "paper.start", rt, fmt.Sprintf("paper already running %s pid=%d", name, pid))
+		return 0
+	}
+
+	pid, err := paper.DetachWorker(name)
 	if err != nil {
 		return out.Fail("paper.start", err, 1)
 	}
-	out.Print(os.Stdout, "paper.start", s.Runtime, fmt.Sprintf("paper started %s (%d levels)", bot.Name, len(s.Runtime.Orders)))
+	rt, err := paper.Status(name)
+	if err != nil {
+		return out.Fail("paper.start", fmt.Errorf("worker pid=%d started but runtime not ready: %w", pid, err), 1)
+	}
+	out.Print(os.Stdout, "paper.start", rt, fmt.Sprintf("paper started %s (%d levels) detached pid=%d", bot.Name, len(rt.Orders), pid))
 	return 0
+}
+
+func paperWorker(args []string) int {
+	pos := positional(args)
+	if len(pos) < 1 {
+		return 2
+	}
+	name := pos[0]
+	bot, err := store.GetBot(name)
+	if err != nil {
+		return 1
+	}
+	exRec, err := store.GetExchange(bot.Exchange)
+	if err != nil {
+		return 1
+	}
+	drv, err := exchangex.Open(exchangex.Config{
+		Venue: exRec.Venue, Market: exRec.Market, Testnet: exRec.Testnet, Paper: true,
+	})
+	if err != nil {
+		return 1
+	}
+	s, err := paper.Start(context.Background(), bot, drv)
+	if err != nil {
+		return 1
+	}
+	waitSignals(s)
+	return 0
+}
+
+func waitSignals(s *paper.Session) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-ch
+		_ = paper.Stop(s.Bot.Name)
+	}()
+	s.Wait()
 }
 
 func paperStatus(args []string) int {
@@ -75,8 +138,15 @@ func paperStatus(args []string) int {
 			filledN++
 		}
 	}
-	out.Print(os.Stdout, "paper.status", rt, fmt.Sprintf("%s mode=%s status=%s open=%d filled=%d last=%s",
-		rt.BotName, rt.Mode, rt.Status, openN, filledN, rt.Meta["last_price"]))
+	alive, pid := paper.WorkerAlive(pos[0])
+	meta := rt.Meta
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	out.Print(os.Stdout, "paper.status", map[string]any{
+		"runtime": rt, "worker_alive": alive, "worker_pid": pid,
+	}, fmt.Sprintf("%s mode=%s status=%s open=%d filled=%d last=%s worker=%v",
+		rt.BotName, rt.Mode, rt.Status, openN, filledN, meta["last_price"], alive))
 	return 0
 }
 

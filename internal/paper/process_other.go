@@ -2,7 +2,10 @@
 
 package paper
 
-import "os"
+import (
+	"os"
+	"os/exec"
+)
 
 func processExists(pid int) bool {
 	p, err := os.FindProcess(pid)
@@ -12,4 +15,8 @@ func processExists(pid int) bool {
 	// Windows FindProcess always succeeds; Release is best-effort.
 	_ = p
 	return true
+}
+
+func setDetachAttr(cmd *exec.Cmd) {
+	// No setsid equivalent required for MVP detach on non-unix.
 }

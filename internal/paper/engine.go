@@ -265,7 +265,7 @@ func Status(name string) (*store.RuntimeState, error) {
 	return store.GetRuntime(name)
 }
 
-// Recover reloads sealed runtimes marked running (same process). Prefer DetachWorker for CLI.
+// Recover reloads sealed paper runtimes into this process when no worker pid is alive.
 func Recover(ctx context.Context, openEx func(bot *store.Bot) (exchangex.Exchange, error)) error {
 	rts, err := store.ListRuntimes()
 	if err != nil {

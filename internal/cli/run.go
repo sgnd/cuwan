@@ -64,6 +64,14 @@ func runStart(args []string) int {
 	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
+	if bot.Leverage > 0 {
+		entry := (bot.Lower + bot.Upper) / 2
+		d := risk.CheckFutures(entry, ticker.Price, bot.Leverage, "buy")
+		bot.Leverage = d.Leverage
+		if d.Preventive {
+			return out.Fail("run.start", fmt.Errorf("%s", d.BlockReason), 1)
+		}
+	}
 	if !dry {
 		if out.Agent() && !flagBool(args, "--yes") {
 			return out.Fail("run.start", fmt.Errorf("live trading requires a person confirm; pass --yes only when a human approved"), 1)

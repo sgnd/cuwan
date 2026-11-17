@@ -18,6 +18,7 @@ const guideText = `cuwan agent playbook
 5. Bot: cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N [--leverage N]
    Futures leverage is capped at 20x; ~5% preventive close is always on.
 6. Paper (no signed orders): cuwan paper start NAME
+   Detaches a worker; status/stop talk to sealed runtime. Restart resumes open orders.
 7. Live needs a human --yes confirm. Agents must not invent --yes.
 8. Destructive stop/flatten/rm require --yes from a person.
 9. Do not read ~/.cuwan by hand; do not change CUWAN_HOME for the user.

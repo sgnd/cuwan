@@ -26,9 +26,10 @@ printf '%s' "$API_KEY:$API_SECRET" | cuwan secret set binance-main
 ```bash
 cuwan exchange add binance --venue binance --secret secret:binance-main --market spot
 cuwan bot add btc-grid --exchange binance --symbol BTCUSDT --lower 90000 --upper 110000 --levels 11 --order-size 0.001
-cuwan paper start btc-grid
-cuwan paper status btc-grid
-cuwan paper stop btc-grid --yes
+cuwan paper start btc-grid          # detaches a worker; sealed runtime under ~/.cuwan
+cuwan paper status btc-grid         # worker_alive + last_price
+cuwan paper stop btc-grid --yes     # signals worker via sealed status
+# crash recovery: paper start again resumes open orders from sealed runtime
 ```
 
 ## Live (human required)

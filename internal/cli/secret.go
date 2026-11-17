@@ -43,8 +43,8 @@ func secretSet(args []string) int {
 	}
 	_ = store.AppendAudit("secret.set", map[string]any{"name": pos[0]})
 	out.Print(os.Stdout, "secret.set", map[string]string{
-		"name": pos[0], "ref": "secret:" + pos[0], "value": out.Hidden(),
-	}, "saved secret:"+pos[0]+" ("+out.Hidden()+")")
+		"name": pos[0], "ref": out.SecretRef(pos[0]), "value": out.Hidden(),
+	}, "saved "+out.SecretRef(pos[0])+" ("+out.Hidden()+")")
 	return 0
 }
 

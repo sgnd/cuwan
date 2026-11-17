@@ -118,15 +118,23 @@ func vaultAEAD(master []byte) (cipher.AEAD, error) {
 }
 
 func currentMaster() ([]byte, error) {
-	meta, err := sealdb.Peek(context.Background(), store.DBPath())
+	path := store.DBPath()
+	meta, err := sealdb.Peek(context.Background(), path)
 	if errors.Is(err, os.ErrNotExist) {
-		m, _, err := storeMaster(nil, true)
-		return m, err
+		// Create the store once via store.DB so we never mint a throwaway
+		// master (keychain create overwrites; a second mint breaks decrypt).
+		if _, err := store.DB(true); err != nil {
+			return nil, err
+		}
+		meta, err = sealdb.Peek(context.Background(), path)
 	}
 	if err != nil {
 		return nil, err
 	}
-	m, _, err := storeMaster(meta, false)
+	if store.KeySource == nil {
+		return nil, errors.New("vault: no key source configured")
+	}
+	m, _, err := store.KeySource(meta, false)
 	return m, err
 }
 
