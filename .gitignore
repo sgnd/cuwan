@@ -1,0 +1,9 @@
+/bin/
+/bins/
+/dist/
+*.test
+*.out
+.cuwan/
+.DS_Store
+.idea/
+.vscode/

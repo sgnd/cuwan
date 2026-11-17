@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: make test
+        env:
+          CUWAN_KEYCHAIN: "off"
+      - name: Build static binary
+        run: make build
+      - name: Verify static / version
+        run: |
+          file bin/cuwan || true
+          ./bin/cuwan version
+          CGO_ENABLED=0 go version -m bin/cuwan | head -5
+      - name: Vet
+        run: make lint
+
+  release-check:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-build
+        run: |
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os=${pair%/*}; arch=${pair#*/}
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o dist/cuwan_${os}_${arch}/cuwan ./cmd/cuwan
+            tar -C dist/cuwan_${os}_${arch} -czf dist/cuwan_${os}_${arch}.tar.gz cuwan
+          done
+          ls -la dist/
