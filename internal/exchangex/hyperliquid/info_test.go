@@ -79,7 +79,7 @@ func TestRulesFromMeta(t *testing.T) {
 	}
 }
 
-// A wallet key cannot be proven withdraw-free yet, so live use is refused.
+// A secret that is not a valid key fails closed; paper needs no key.
 func TestPermissionsFailClosed(t *testing.T) {
 	d, _ := info(t, nil)
 	if _, err := d.Permissions(context.Background()); err == nil {

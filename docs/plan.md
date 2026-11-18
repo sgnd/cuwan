@@ -103,10 +103,13 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | `OrderStatus` in native drivers (without it the live loop never refills) | done for Binance and Hyperliquid (cloid is a hash of the cuwan client order ID) |
 | Hyperliquid rules from meta: size step, price tick from 5 significant figures, $10 minimum | done |
 | Hyperliquid key check said a wallet key cannot withdraw without checking | done: fails closed until the signer can prove an API wallet |
-| Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | open: needs the owner's yes and its own review |
+| Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | done: owner said yes; matches the official SDK's test vectors; waits on independent review |
+| Hyperliquid live key check: the secret must be an API wallet of the configured account | done: proven with `userRole`; anything else fails closed |
+| Hyperliquid testnet round trip (like `make testnet` for Binance) | open |
+| Hyperliquid venue label `paper-only` changed to `full` | open: after the first testnet round trip |
 | Binance order states normalised to open, filled, canceled (`NEW` was stored as `new`, which the loop skipped) | done |
 | Binance key check via `/sapi/v1/account/apiRestrictions` (USD-M was never checked; spot read the wrong field) | done |
-| Hyperliquid testnet: L1 signing (today returns an error) | open |
+| Hyperliquid testnet: L1 signing (today returns an error) | done: see Hyperliquid signing below |
 | Opt-in integration tests behind an env flag, testnet keys only | done for Binance: `make testnet` (skipped without testnet keys; forced to testnet hosts); first run waits on the owner's testnet keys |
 | Catalog venues stay `paper-only` or `stub` until a native driver lands | deferred: waits on M4 drivers above |
 

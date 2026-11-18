@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
@@ -52,6 +53,110 @@ type Driver struct {
 	infoURL string
 	exchURL string
 	client  *http.Client
+
+	mu        sync.Mutex
+	assets    map[string]int // coin -> index in meta.universe
+	lastNonce uint64
+	sg        *signer
+}
+
+// wallet returns the signer for the secret key.
+func (d *Driver) wallet() (*signer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.sg == nil {
+		if d.cfg.APISecret == "" {
+			return nil, fmt.Errorf("hyperliquid: missing API wallet private key (secret)")
+		}
+		sg, err := newSigner(d.cfg.APISecret)
+		if err != nil {
+			return nil, err
+		}
+		d.sg = sg
+	}
+	return d.sg, nil
+}
+
+// asset returns the coin's index in meta.universe, which actions use.
+func (d *Driver) asset(ctx context.Context, coin string) (int, error) {
+	d.mu.Lock()
+	i, ok := d.assets[coin]
+	d.mu.Unlock()
+	if ok {
+		return i, nil
+	}
+	var meta struct {
+		Universe []struct {
+			Name string `json:"name"`
+		} `json:"universe"`
+	}
+	if err := d.postJSON(ctx, d.infoURL, map[string]any{"type": "meta"}, &meta); err != nil {
+		return 0, err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.assets = map[string]int{}
+	for i, u := range meta.Universe {
+		d.assets[u.Name] = i
+	}
+	if i, ok := d.assets[coin]; ok {
+		return i, nil
+	}
+	return 0, fmt.Errorf("hyperliquid: unknown coin %s", coin)
+}
+
+// nonce is the time in ms, strictly increasing within this driver.
+func (d *Driver) nonce() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := uint64(time.Now().UnixMilli())
+	if n <= d.lastNonce {
+		n = d.lastNonce + 1
+	}
+	d.lastNonce = n
+	return n
+}
+
+// exchange signs and posts an L1 action, then decodes response.data.
+func (d *Driver) exchange(ctx context.Context, action omap, data any) error {
+	sg, err := d.wallet()
+	if err != nil {
+		return err
+	}
+	n := d.nonce()
+	sig, err := sg.signL1(action, n, !d.cfg.Testnet)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Status   string          `json:"status"`
+		Response json.RawMessage `json:"response"`
+	}
+	body := map[string]any{"action": action, "nonce": n, "signature": sig, "vaultAddress": nil}
+	if err := d.postJSON(ctx, d.exchURL, body, &resp); err != nil {
+		return err
+	}
+	if resp.Status != "ok" {
+		return fmt.Errorf("hyperliquid: %s", truncate(resp.Response))
+	}
+	if data == nil {
+		return nil
+	}
+	var inner struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Response, &inner); err != nil {
+		return err
+	}
+	return json.Unmarshal(inner.Data, data)
+}
+
+func truncate(b []byte) string {
+	s := string(b)
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }
 
 func (d *Driver) Name() string   { return "hyperliquid" }
@@ -187,36 +292,139 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 	if d.cfg.Paper {
 		return exchangex.Order{}, fmt.Errorf("hyperliquid: paper mode refuses signed PlaceOrder")
 	}
-	if d.cfg.APISecret == "" {
-		return exchangex.Order{}, fmt.Errorf("hyperliquid: missing wallet private key (secret)")
+	asset, err := d.asset(ctx, req.Symbol)
+	if err != nil {
+		return exchangex.Order{}, err
 	}
-	// Full L1 signing is venue-specific; MVP returns a clear error directing
-	// operators to paper mode until the signer lands for their network.
-	return exchangex.Order{}, fmt.Errorf("hyperliquid: live PlaceOrder signing not enabled in this build; use paper mode or contribute the EIP-712 signer")
+	tif := "Gtc"
+	switch {
+	case req.IOC:
+		tif = "Ioc"
+	case req.PostOnly:
+		tif = "Alo"
+	}
+	cloid := ""
+	if req.ClientOID != "" {
+		cloid = Cloid(req.ClientOID)
+	}
+	w, err := orderWire(asset, req.Side == exchangex.SideBuy, req.Price, req.Qty, req.ReduceOnly, tif, cloid)
+	if err != nil {
+		return exchangex.Order{}, err
+	}
+	var st struct {
+		Statuses []struct {
+			Resting *struct {
+				Oid int64 `json:"oid"`
+			} `json:"resting"`
+			Filled *struct {
+				Oid     int64  `json:"oid"`
+				TotalSz string `json:"totalSz"`
+			} `json:"filled"`
+			Error string `json:"error"`
+		} `json:"statuses"`
+	}
+	if err := d.exchange(ctx, omap{{"type", "order"}, {"orders", []any{w}}, {"grouping", "na"}}, &st); err != nil {
+		return exchangex.Order{}, err
+	}
+	if len(st.Statuses) != 1 {
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: expected one order status, got %d", len(st.Statuses))
+	}
+	o := exchangex.Order{ClientOID: req.ClientOID, Symbol: req.Symbol, Side: req.Side, Price: req.Price, Qty: req.Qty, ReduceOnly: req.ReduceOnly}
+	switch r := st.Statuses[0]; {
+	case r.Error != "":
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: order rejected: %s", r.Error)
+	case r.Resting != nil:
+		o.ID, o.Status = strconv.FormatInt(r.Resting.Oid, 10), "open"
+	case r.Filled != nil:
+		o.ID, o.Status = strconv.FormatInt(r.Filled.Oid, 10), "filled"
+		o.Filled, _ = strconv.ParseFloat(r.Filled.TotalSz, 64)
+	default:
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: unexpected order status")
+	}
+	return o, nil
 }
 
+// CancelOrder cancels by oid, or by the cloid made from the client order ID.
 func (d *Driver) CancelOrder(ctx context.Context, symbol, orderID, clientOID string) error {
 	if d.cfg.Paper {
 		return fmt.Errorf("hyperliquid: paper mode refuses signed CancelOrder")
 	}
-	return fmt.Errorf("hyperliquid: live CancelOrder signing not enabled in this build")
+	asset, err := d.asset(ctx, symbol)
+	if err != nil {
+		return err
+	}
+	var action omap
+	switch {
+	case orderID != "":
+		oid, err := strconv.ParseInt(orderID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("hyperliquid: bad oid %q", orderID)
+		}
+		action = omap{{"type", "cancel"}, {"cancels", []any{omap{{"a", asset}, {"o", oid}}}}}
+	case clientOID != "":
+		action = omap{{"type", "cancelByCloid"}, {"cancels", []any{omap{{"asset", asset}, {"cloid", Cloid(clientOID)}}}}}
+	default:
+		return fmt.Errorf("hyperliquid: CancelOrder needs an order ID")
+	}
+	var st struct {
+		Statuses []json.RawMessage `json:"statuses"`
+	}
+	if err := d.exchange(ctx, action, &st); err != nil {
+		return err
+	}
+	for _, raw := range st.Statuses {
+		var e struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
+			if strings.Contains(e.Error, "never placed") || strings.Contains(e.Error, "already canceled") || strings.Contains(e.Error, "filled") {
+				return fmt.Errorf("hyperliquid: %s: %w", e.Error, exchangex.ErrOrderNotFound)
+			}
+			return fmt.Errorf("hyperliquid: cancel rejected: %s", e.Error)
+		}
+	}
+	return nil
 }
 
+// SetLeverage sets cross leverage for the coin.
 func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) error {
 	if d.cfg.Paper {
 		return nil
 	}
-	return fmt.Errorf("hyperliquid: live SetLeverage signing not enabled in this build")
+	asset, err := d.asset(ctx, symbol)
+	if err != nil {
+		return err
+	}
+	return d.exchange(ctx, omap{{"type", "updateLeverage"}, {"asset", asset}, {"isCross", true}, {"leverage", int(lev)}}, nil)
 }
 
-// Permissions fails closed for live use. A main wallet key can withdraw;
-// only an approved API wallet cannot, and proving which one the secret is
-// needs the signer (not in this build).
+// Permissions proves the secret is an API wallet of the configured account.
+// An API wallet can trade but cannot withdraw; the account's own key can.
+// Anything else fails closed.
 func (d *Driver) Permissions(ctx context.Context) (exchangex.Permissions, error) {
 	if d.cfg.Paper || d.cfg.APISecret == "" {
 		return exchangex.Permissions{CanRead: true}, nil
 	}
-	return exchangex.Permissions{}, fmt.Errorf("hyperliquid: cannot prove the key is an API wallet (no withdraw rights) until signing lands")
+	sg, err := d.wallet()
+	if err != nil {
+		return exchangex.Permissions{}, err
+	}
+	if strings.EqualFold(sg.addr, d.cfg.APIKey) {
+		return exchangex.Permissions{CanRead: true, CanTrade: true, CanWithdraw: true, Raw: "account key"}, nil
+	}
+	var role struct {
+		Role string `json:"role"`
+		Data struct {
+			User string `json:"user"`
+		} `json:"data"`
+	}
+	if err := d.postJSON(ctx, d.infoURL, map[string]any{"type": "userRole", "user": sg.addr}, &role); err != nil {
+		return exchangex.Permissions{}, err
+	}
+	if role.Role != "agent" || !strings.EqualFold(role.Data.User, d.cfg.APIKey) {
+		return exchangex.Permissions{}, fmt.Errorf("hyperliquid: key %s is not an API wallet of %s (role %q)", sg.addr, d.cfg.APIKey, role.Role)
+	}
+	return exchangex.Permissions{CanRead: true, CanTrade: true, Raw: "api wallet " + sg.addr}, nil
 }
 
 // Cloid maps a cuwan client order ID to Hyperliquid's 16-byte hex cloid.
