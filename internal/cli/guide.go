@@ -50,9 +50,9 @@ func cmdSchema(args []string) int {
 		},
 		"secret_display": []string{"[hidden]", "[secret:NAME]"},
 		"guardrails": map[string]any{
-			"max_leverage":           20,
-			"preventive_close_pct":   0.05,
-			"disable_flag":           false,
+			"max_leverage":         20,
+			"preventive_close_pct": 0.05,
+			"disable_flag":         false,
 		},
 	}
 	if out.Agent() {

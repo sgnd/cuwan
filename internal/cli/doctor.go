@@ -31,10 +31,10 @@ func cmdDoctor(args []string) int {
 		return out.Fail("doctor", err, 1)
 	}
 	data := map[string]any{
-		"home":    dir,
-		"store":   storeStatus,
+		"home":     dir,
+		"store":    storeStatus,
 		"key_mode": keyMode,
-		"version": Version,
+		"version":  Version,
 	}
 	text := fmt.Sprintf("home: %s\nstore: %s\nok", dir, storeStatus)
 	if keyMode != "" {

@@ -67,11 +67,11 @@ func ShouldPreventiveClose(entry, mark, liq float64) bool {
 
 // Decision is the result of a risk check before placing or holding.
 type Decision struct {
-	Leverage     float64 `json:"leverage"`
-	LiqEstimate  float64 `json:"liq_estimate,omitempty"`
-	Preventive   bool    `json:"preventive_close"`
-	BlockReason  string  `json:"block_reason,omitempty"`
-	Warn         string  `json:"warn,omitempty"`
+	Leverage    float64 `json:"leverage"`
+	LiqEstimate float64 `json:"liq_estimate,omitempty"`
+	Preventive  bool    `json:"preventive_close"`
+	BlockReason string  `json:"block_reason,omitempty"`
+	Warn        string  `json:"warn,omitempty"`
 }
 
 // CheckFutures applies leverage cap and preventive close logic.

@@ -172,6 +172,9 @@ func exchangeTest(args []string) int {
 	return 0
 }
 
+// openExchange is a seam so tests can swap in a fake driver.
+var openExchange = openNamedExchange
+
 func openNamedExchange(name string, paperOK bool) (*store.Exchange, exchangex.Exchange, error) {
 	e, err := store.GetExchange(name)
 	if err != nil {

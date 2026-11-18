@@ -18,8 +18,8 @@ import (
 )
 
 var (
-	ErrNoStore = errors.New("store: no sealed store yet; run cuwan doctor or set a secret first")
-	ErrExists  = errors.New("store: already exists")
+	ErrNoStore  = errors.New("store: no sealed store yet; run cuwan doctor or set a secret first")
+	ErrExists   = errors.New("store: already exists")
 	ErrNotFound = errors.New("store: not found")
 )
 
@@ -234,8 +234,8 @@ const (
 // Exchange is a venue credential reference.
 type Exchange struct {
 	Name      string    `json:"name"`
-	Venue     string    `json:"venue"` // registered id (cuwan exchange venues)
-	Market    string    `json:"market"` // spot | usdm | perp
+	Venue     string    `json:"venue"`      // registered id (cuwan exchange venues)
+	Market    string    `json:"market"`     // spot | usdm | perp
 	SecretRef string    `json:"secret_ref"` // secret:NAME
 	Testnet   bool      `json:"testnet,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -245,24 +245,24 @@ type Exchange struct {
 
 // Bot is a grid bot config. Guardrails are always enforced by the engine.
 type Bot struct {
-	Name         string    `json:"name"`
-	Exchange     string    `json:"exchange"`
-	Symbol       string    `json:"symbol"`
-	Lower        float64   `json:"lower"`
-	Upper        float64   `json:"upper"`
-	Levels       int       `json:"levels"`
-	OrderSize    float64   `json:"order_size"`
-	Leverage     float64   `json:"leverage,omitempty"` // futures; capped at 20
-	QuoteAmount  float64   `json:"quote_amount,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	ID           string    `json:"-"`
+	Name        string    `json:"name"`
+	Exchange    string    `json:"exchange"`
+	Symbol      string    `json:"symbol"`
+	Lower       float64   `json:"lower"`
+	Upper       float64   `json:"upper"`
+	Levels      int       `json:"levels"`
+	OrderSize   float64   `json:"order_size"`
+	Leverage    float64   `json:"leverage,omitempty"` // futures; capped at 20
+	QuoteAmount float64   `json:"quote_amount,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string    `json:"-"`
 }
 
 // RuntimeState is sealed crash-recovery state for a running bot.
 type RuntimeState struct {
 	BotName   string            `json:"bot_name"`
-	Mode      string            `json:"mode"` // paper | live
+	Mode      string            `json:"mode"`   // paper | live
 	Status    string            `json:"status"` // running | stopped
 	Orders    []RuntimeOrder    `json:"orders,omitempty"`
 	StartedAt time.Time         `json:"started_at"`
@@ -273,12 +273,12 @@ type RuntimeState struct {
 
 // RuntimeOrder is one tracked order for restart reconcile.
 type RuntimeOrder struct {
-	ClientOID string  `json:"client_oid"`
-	ExchangeID string `json:"exchange_id,omitempty"`
-	Side      string  `json:"side"`
-	Price     float64 `json:"price"`
-	Qty       float64 `json:"qty"`
-	Status    string  `json:"status"`
+	ClientOID  string  `json:"client_oid"`
+	ExchangeID string  `json:"exchange_id,omitempty"`
+	Side       string  `json:"side"`
+	Price      float64 `json:"price"`
+	Qty        float64 `json:"qty"`
+	Status     string  `json:"status"`
 }
 
 func putJSON(typ, id string, v any) (string, error) {

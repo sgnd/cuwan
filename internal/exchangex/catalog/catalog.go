@@ -64,7 +64,7 @@ func spotFut(id string, tick *publictick.Spec) entry {
 	return entry{
 		id: id, kind: exchangex.KindCEX,
 		markets: []string{exchangex.MarketSpot, exchangex.MarketUSDM},
-		live: live, ticker: tick,
+		live:    live, ticker: tick,
 	}
 }
 

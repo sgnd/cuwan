@@ -165,7 +165,7 @@ func paperStop(args []string) int {
 		return out.Fail("paper.stop", fmt.Errorf("refusing without --yes"), 1)
 	}
 	if !flagBool(args, "--yes") && !out.Agent() {
-		if !confirm("stop paper bot "+pos[0]+"?") {
+		if !confirm("stop paper bot " + pos[0] + "?") {
 			return out.Fail("paper.stop", fmt.Errorf("aborted"), 1)
 		}
 	}

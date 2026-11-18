@@ -191,7 +191,7 @@ func botRm(args []string) int {
 		if out.Agent() {
 			return out.Fail("bot.rm", fmt.Errorf("refusing without --yes"), 1)
 		}
-		if !confirm("delete bot "+pos[0]+"?") {
+		if !confirm("delete bot " + pos[0] + "?") {
 			return out.Fail("bot.rm", fmt.Errorf("aborted"), 1)
 		}
 	}

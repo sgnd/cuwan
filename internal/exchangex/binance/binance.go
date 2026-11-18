@@ -95,8 +95,8 @@ func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
 	}
 	if d.market == exchangex.MarketUSDM {
 		var raw []struct {
-			Asset string `json:"asset"`
-			Balance string `json:"balance"`
+			Asset            string `json:"asset"`
+			Balance          string `json:"balance"`
 			AvailableBalance string `json:"availableBalance"`
 		}
 		if err := d.signed(ctx, http.MethodGet, "/fapi/v2/balance", nil, &raw); err != nil {

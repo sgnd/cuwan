@@ -19,7 +19,8 @@ install: ## Install cuwan into $$GOPATH/bin
 test: ## Fast unit tests
 	CGO_ENABLED=0 go test -p 2 ./...
 
-lint: ## go vet
+lint: ## gofmt check and go vet
+	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "run gofmt -w cmd internal"; exit 1; }
 	CGO_ENABLED=0 go vet ./...
 
 security: ## Known vulnerabilities in the code and its modules (govulncheck)
