@@ -55,6 +55,8 @@ func run(args []string) int {
 		return cmdPositions(args[1:])
 	case "balance":
 		return cmdBalance(args[1:])
+	case "report":
+		return cmdReport(args[1:])
 	case "audit":
 		return cmdAudit(args[1:])
 	case "help", "-h", "--help":
@@ -79,7 +81,7 @@ VENUE        exchange add|list|venues|test
 BOTS         bot add|list|show|edit|rm · draft-range (stub)
 PAPER        paper start|status|stop
 LIVE         run start|status|stop
-READ         orders · positions · balance · audit
+READ         orders · positions · balance · audit · report [NAME] [--fee 0.1%]
 
 Venues: live on binance; hyperliquid on testnet; other ids are catalog entries for paper.
 Paper uses public tickers where wired; secrets stay secret:NAME.
