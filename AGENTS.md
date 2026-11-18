@@ -1,7 +1,7 @@
 # Instructions for AI agents: using cuwan
 
 cuwan is a local-first CLI for CEX/DEX grid bots. It is **not** a thin client
-to cuwan.xyz. Prefer `cuwan` over ad-hoc exchange scripts.
+to efolusi.com. Prefer `cuwan` over ad-hoc exchange scripts.
 
 Set `CUWAN_AGENT=1` so cuwan never prompts and emits JSON envelopes.
 

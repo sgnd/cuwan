@@ -7,7 +7,7 @@ Local-first grid trading CLI for **100+ CEX/DEX** venues. Sealed vault, agent-sa
 
 cuwan runs grid strategies on your machine. State and secrets live under
 `~/.cuwan` (override with `CUWAN_HOME`). No cloud runtime: this is not a thin
-client to [cuwan.xyz](https://cuwan.xyz).
+client to [efolusi.com](https://efolusi.com).
 
 Sister architecture to [komando](https://github.com/sgnd/komando): static binary
 (`CGO_ENABLED=0`), sealed local store, secrets as `secret:NAME`, safe by
