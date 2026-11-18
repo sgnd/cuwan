@@ -35,6 +35,7 @@ live; Hyperliquid runs on its testnet.
   symbol rules (5 significant figures, $10 minimum).
 - `make testnet`: opt-in round trips on the Binance and Hyperliquid testnets.
 - A registry of further venue ids for paper (catalog entries; no live use).
+- `cuwan export FILE` and `cuwan import FILE`: back up exchanges, bots and runtimes (and the audit log with `--with-audit`) without secret values.
 
 ### Security
 
