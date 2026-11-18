@@ -180,7 +180,11 @@ func (s *Session) step(ctx context.Context) {
 		}
 	}
 
-	for i := range s.Runtime.Orders {
+	step := 0.0
+	if s.Bot.Levels > 1 {
+		step = (s.Bot.Upper - s.Bot.Lower) / float64(s.Bot.Levels-1)
+	}
+	for i, n := 0, len(s.Runtime.Orders); i < n; i++ {
 		o := &s.Runtime.Orders[i]
 		if o.Status != "open" {
 			continue
@@ -194,15 +198,19 @@ func (s *Session) step(ctx context.Context) {
 		}
 		if filled {
 			o.Status = "filled"
-			// place opposite on fill (classic grid)
-			opp := "sell"
+			// Classic grid: the opposite order goes one level away, so it
+			// takes a real move to fill (not the same price on the next tick).
+			opp, px := "sell", o.Price+step
 			if o.Side == "sell" {
-				opp = "buy"
+				opp, px = "buy", o.Price-step
+			}
+			if px <= 0 {
+				continue
 			}
 			s.Runtime.Orders = append(s.Runtime.Orders, store.RuntimeOrder{
-				ClientOID: grid.ClientOID(s.Bot.Name, o.Price, opp, 2),
+				ClientOID: grid.ClientOID(s.Bot.Name, px, opp, len(s.Runtime.Orders)+1),
 				Side:      opp,
-				Price:     o.Price,
+				Price:     px,
 				Qty:       o.Qty,
 				Status:    "open",
 			})

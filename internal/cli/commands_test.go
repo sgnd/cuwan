@@ -131,3 +131,29 @@ func TestSchemaMatchesDispatch(t *testing.T) {
 		}
 	}
 }
+
+func TestPaperCommandGuards(t *testing.T) {
+	setup(t, &fakeEx{})
+	if code, _ := call(t, "paper", "stop", "g"); code == 0 {
+		t.Fatal("agent paper stop without --yes")
+	}
+	if code, _ := call(t, "paper", "status", "nobody"); code == 0 {
+		t.Fatal("status of unknown bot")
+	}
+	if code, _ := call(t, "paper", "start", "nobody"); code == 0 {
+		t.Fatal("start of unknown bot")
+	}
+}
+
+func TestExchangeTest(t *testing.T) {
+	fx := &fakeEx{}
+	setup(t, fx)
+	code, env := call(t, "exchange", "test", "fx")
+	if code != 0 || env.Data.(map[string]any)["price"].(float64) != 100 {
+		t.Fatalf("%d %+v", code, env)
+	}
+	fx.perms.CanWithdraw = true
+	if code, env := call(t, "exchange", "test", "fx"); code == 0 || !strings.Contains(env.Error, "withdrawal") {
+		t.Fatalf("withdraw key passed: %+v", env)
+	}
+}

@@ -26,7 +26,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | # | Milestone | Status |
 |---|---|---|
 | M1 | Safety and test harness | done |
-| M2 | Command tests for every verb | open (paper tests left) |
+| M2 | Command tests for every verb | done |
 | M3 | Live engine loop | open |
 | M4 | Venue drivers on testnets | open |
 | M5 | Release readiness | open |
@@ -50,10 +50,12 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 |---|---|
 | Tests for `secret set/list/show/rename` (stdin only for agents, values hidden) | done |
 | Tests for `exchange add/list/venues` | done |
-| Test for `exchange test` | open |
+| Test for `exchange test` | done |
 | Tests for `bot add/list/show/edit/rm` and flag validation | done |
 | `bot add/edit` reject a range the grid cannot build and negative sizes | done |
-| Tests for `paper start/status/stop` with a fake public ticker | open |
+| Tests for `paper start/status/stop` with a fake public ticker | done |
+| Paper engine: opposite order goes one grid level away (was the same price, so it refilled every tick) | done |
+| Detached paper worker end-to-end test (spawns a process) | open |
 | Tests for `orders`, `positions`, `balance`, `audit`, `doctor`, `guide`, `schema` | done |
 | Read commands use the `openExchange` seam (fakeable in tests) | done |
 | `cuwan schema` output checked against the real command list | done |
