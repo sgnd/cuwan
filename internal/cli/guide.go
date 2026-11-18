@@ -14,7 +14,7 @@ const guideText = `cuwan agent playbook
 2. Run cuwan schema for JSON shapes; cuwan doctor for home/store.
 3. Secrets: echo -n VALUE | cuwan secret set NAME
    Never put secrets on argv. Output shows [hidden] / [secret:NAME].
-4. Venues: cuwan exchange venues (100+ CEX/DEX ids).
+4. Venues: cuwan exchange venues. Live: binance; hyperliquid on testnet only; the rest are catalog entries.
    Exchange: cuwan exchange add NAME --venue ID --secret secret:NAME --market spot|usdm|perp
 5. Bot: cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N [--leverage N]
    Futures leverage is capped at 20x; ~5% preventive close is always on.

@@ -3,15 +3,27 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![CI](https://github.com/sgnd/cuwan/actions/workflows/ci.yml/badge.svg)](https://github.com/sgnd/cuwan/actions/workflows/ci.yml)
 
-Local-first grid trading CLI for **100+ CEX/DEX** venues. Sealed vault, agent-safe JSON.
+**One local command line for your grid trading bots on crypto exchanges. For you and your AI agent.**
 
-cuwan runs grid strategies on your machine. State and secrets live under
-`~/.cuwan` (override with `CUWAN_HOME`). No cloud runtime: this is not a thin
-client to [efolusi.com](https://efolusi.com).
+A grid bot places buy and sell orders at fixed price levels and refills
+each side as the price moves. Hosted services run these bots for you and
+hold your exchange keys. cuwan runs them on your own machine instead, and
+you and an AI agent (Claude Code, Codex, Cursor, your own bot) can both
+drive it:
 
-Sister architecture to [komando](https://github.com/sgnd/komando): static binary
-(`CGO_ENABLED=0`), sealed local store, secrets as `secret:NAME`, safe by
-default, text for humans and JSON for agents (`CUWAN_AGENT=1`).
+- **Your keys stay in an encrypted vault** under `~/.cuwan`. An AI agent
+  sees `[secret:NAME]`, never the value.
+- **Try a grid on paper first.** Paper mode uses public prices and never
+  sends a signed order.
+- **Live orders need a person's yes.** cuwan refuses a key that can
+  withdraw, caps leverage at 20x, and closes a position before it nears
+  liquidation. The close cannot be turned off.
+- **Readable text for you, JSON for an agent** (`CUWAN_AGENT=1`).
+- **One file to install**, no cloud runtime. cuwan is not a thin client
+  to [efolusi.com](https://efolusi.com).
+
+It is built like [komando](https://github.com/sgnd/komando): one static
+binary, a sealed local store, and secrets referred to as `secret:NAME`.
 
 ## Install
 
@@ -34,10 +46,16 @@ cuwan exchange venues                 # list every registered venue id
 cuwan exchange add my-okx --venue okx --secret secret:okx-main --market spot
 ```
 
-The registry lists **100+** CEX/DEX ids. Native live drivers today: **Binance**
-(spot/USDM). **Hyperliquid** has native paper + public info (live signing not
-enabled yet). Many other venues expose **public tickers for paper**; live
-trading for those backends is stubbed until a native or library adapter lands.
+Which venues work today:
+
+| Venue | Paper | Live |
+|---|---|---|
+| Binance spot and USD-M | yes | yes; the first run on the Binance testnet is still to come |
+| Hyperliquid perps | yes | testnet only, until its testnet run is done |
+| Every other id in `cuwan exchange venues` | public prices where the venue has them | no: catalog entries only |
+
+`cuwan run start` refuses a live run on a venue that is not marked `full`,
+unless the exchange is set to its testnet.
 Secrets stay sealed refs (`secret:NAME`) and are never shown raw to agents.
 
 ## First commands

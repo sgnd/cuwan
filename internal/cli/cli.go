@@ -81,7 +81,7 @@ PAPER        paper start|status|stop
 LIVE         run start|status|stop
 READ         orders · positions · balance · audit
 
-Venues: 100+ CEX/DEX ids (cuwan exchange venues). Native: binance, hyperliquid.
+Venues: live on binance; hyperliquid on testnet; other ids are catalog entries for paper.
 Paper uses public tickers where wired; secrets stay secret:NAME.
 Guardrails: 20x leverage cap · ~5% preventive reduce-only close (always on)
 `)+"\n")
