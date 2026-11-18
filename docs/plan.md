@@ -86,10 +86,11 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Re-review N4: start over a halted bot dropped the old runtime | done: start refuses until `run stop` |
 | Re-review N5: the close was a GTC limit and could leave the position open | done: reduce-only IOC, 3 tries with fresh prices, venue position must shrink |
 | Re-review low: stop file left after timeout; `unknown` never rechecked; not-found on cancel; late fills on stop | done |
+| Re-review low: Binance hedge mode (`positionSide`) | done: hedge-mode accounts are refused |
+| Binance: tick and step from exchangeInfo, IOC closes, -2011 on cancel as not found | done |
 | Review 3 (medium): client order IDs repeated across runs | done: a random run ID is part of every live client order ID |
 | Review 3 low: unknown orders skipped by CancelAll; SIGHUP not caught; lost counter orders | done: unknown is cancelled; SIGHUP marks the bot unguarded; every filled grid order gets one counter order, retried if it failed |
-| Review 3 low: minimum order value (notional) not in the size rules | open: on the Binance branch |
-| Re-review low: Binance hedge mode (`positionSide`) | open: refuse hedge-mode accounts or send `positionSide` |
+| Review 3 low: minimum order value (notional) not in the size rules | done: Binance NOTIONAL and MIN_NOTIONAL |
 | Detached live worker (like paper), so the loop survives the terminal | open: until then live start needs `--foreground` |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |
 | Tests for the loop against the fake driver | done |
@@ -99,9 +100,14 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Item | Status |
 |---|---|
 | Binance spot and USD-M testnet: signed orders, permission probe | open |
-| `OrderStatus` in native drivers (without it the live loop never refills) | open |
+| `OrderStatus` in native drivers (without it the live loop never refills) | done for Binance and Hyperliquid (cloid is a hash of the cuwan client order ID) |
+| Hyperliquid rules from meta: size step, price tick from 5 significant figures, $10 minimum | done |
+| Hyperliquid key check said a wallet key cannot withdraw without checking | done: fails closed until the signer can prove an API wallet |
+| Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | open: needs the owner's yes and its own review |
+| Binance order states normalised to open, filled, canceled (`NEW` was stored as `new`, which the loop skipped) | done |
+| Binance key check via `/sapi/v1/account/apiRestrictions` (USD-M was never checked; spot read the wrong field) | done |
 | Hyperliquid testnet: L1 signing (today returns an error) | open |
-| Opt-in integration tests behind an env flag, testnet keys only | open |
+| Opt-in integration tests behind an env flag, testnet keys only | done for Binance: `make testnet` (skipped without testnet keys; forced to testnet hosts); first run waits on the owner's testnet keys |
 | Catalog venues stay `paper-only` or `stub` until a native driver lands | deferred: waits on M4 drivers above |
 
 ## M5: Release readiness

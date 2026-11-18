@@ -42,5 +42,8 @@ func roundReq(req exchangex.PlaceReq, r exchangex.SymbolRules, crossing bool) (e
 	if req.Qty <= 0 || req.Qty+1e-12 < r.MinQty {
 		return req, fmt.Errorf("live: size %g is below the venue minimum %g for %s", req.Qty, r.MinQty, req.Symbol)
 	}
+	if r.MinNotional > 0 && req.Price*req.Qty+1e-9 < r.MinNotional {
+		return req, fmt.Errorf("live: order value %g is below the venue minimum %g for %s", req.Price*req.Qty, r.MinNotional, req.Symbol)
+	}
 	return req, nil
 }

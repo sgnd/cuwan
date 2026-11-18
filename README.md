@@ -6,7 +6,7 @@
 Local-first grid trading CLI for **100+ CEX/DEX** venues. Sealed vault, agent-safe JSON.
 
 cuwan runs grid strategies on your machine. State and secrets live under
-`~/.cuwan` (override with `CUWAN_HOME`). No cloud runtime — this is not a thin
+`~/.cuwan` (override with `CUWAN_HOME`). No cloud runtime: this is not a thin
 client to [cuwan.xyz](https://cuwan.xyz).
 
 Sister architecture to [komando](https://github.com/sgnd/komando): static binary
@@ -38,7 +38,7 @@ The registry lists **100+** CEX/DEX ids. Native live drivers today: **Binance**
 (spot/USDM). **Hyperliquid** has native paper + public info (live signing not
 enabled yet). Many other venues expose **public tickers for paper**; live
 trading for those backends is stubbed until a native or library adapter lands.
-Secrets stay sealed refs (`secret:NAME`) — never shown raw to agents.
+Secrets stay sealed refs (`secret:NAME`) and are never shown raw to agents.
 
 ## First commands
 

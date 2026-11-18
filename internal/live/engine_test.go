@@ -463,6 +463,10 @@ func TestRoundToVenueFilters(t *testing.T) {
 	if _, err := roundReq(exchangex.PlaceReq{Side: "buy", Price: 1, Qty: 0.004}, r, false); err == nil {
 		t.Error("size below minimum accepted")
 	}
+	r.MinNotional = 100
+	if _, err := roundReq(exchangex.PlaceReq{Side: "buy", Price: 95, Qty: 1}, r, false); err == nil {
+		t.Error("order value below minimum accepted")
+	}
 }
 
 func TestNoRulesRefused(t *testing.T) {
