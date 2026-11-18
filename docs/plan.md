@@ -86,7 +86,8 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Re-review N4: start over a halted bot dropped the old runtime | done: start refuses until `run stop` |
 | Re-review N5: the close was a GTC limit and could leave the position open | done: reduce-only IOC, 3 tries with fresh prices, venue position must shrink |
 | Re-review low: stop file left after timeout; `unknown` never rechecked; not-found on cancel; late fills on stop | done |
-| Re-review low: Binance hedge mode (`positionSide`) | open: refuse hedge-mode accounts or send `positionSide` |
+| Re-review low: Binance hedge mode (`positionSide`) | done: hedge-mode accounts are refused |
+| Binance: tick and step from exchangeInfo, IOC closes, -2011 on cancel as not found | done |
 | Detached live worker (like paper), so the loop survives the terminal | open: until then live start needs `--foreground` |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |
 | Tests for the loop against the fake driver | done |

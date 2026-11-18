@@ -124,3 +124,60 @@ func TestOrderStatusNotFound(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+func TestRulesFromExchangeInfo(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/fapi/v1/exchangeInfo" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"symbols":[{"symbol":"ETHUSDT","filters":[]},{"symbol":"BTCUSDT","filters":[
+			{"filterType":"PRICE_FILTER","tickSize":"0.10"},
+			{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	d := drv(srv, exchangex.MarketUSDM, true)
+	for i := 0; i < 2; i++ {
+		r, err := d.Rules(context.Background(), "BTCUSDT")
+		if err != nil || r.Tick != 0.1 || r.Step != 0.001 || r.MinQty != 0.001 {
+			t.Fatalf("%+v %v", r, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("not cached: %d calls", calls)
+	}
+	if _, err := d.Rules(context.Background(), "ETHUSDT"); err == nil {
+		t.Fatal("symbol without filters accepted")
+	}
+}
+
+func TestIOCAndCancelNotFound(t *testing.T) {
+	srv, hits := mock(t, map[string]any{
+		"POST /fapi/v1/order": map[string]any{"orderId": 1, "status": "EXPIRED"},
+	})
+	d := drv(srv, exchangex.MarketUSDM, true)
+	if _, err := d.PlaceOrder(context.Background(), exchangex.PlaceReq{Symbol: "BTCUSDT", Side: "sell", Price: 1, Qty: 1, ClientOID: "c", IOC: true, ReduceOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*hits)[0], "timeInForce=IOC") {
+		t.Fatalf("not IOC: %s", (*hits)[0])
+	}
+	nf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"code":-2011,"msg":"Unknown order sent."}`))
+	}))
+	t.Cleanup(nf.Close)
+	if err := drv(nf, exchangex.MarketUSDM, true).CancelOrder(context.Background(), "BTCUSDT", "", "c"); !errors.Is(err, exchangex.ErrOrderNotFound) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestHedgeModeRefused(t *testing.T) {
+	srv, _ := mock(t, map[string]any{
+		"GET /fapi/v2/positionRisk": []map[string]string{{"symbol": "BTCUSDT", "positionAmt": "1", "positionSide": "LONG"}},
+	})
+	if _, err := drv(srv, exchangex.MarketUSDM, true).Positions(context.Background()); err == nil || !strings.Contains(err.Error(), "hedge mode") {
+		t.Fatalf("err %v", err)
+	}
+}
