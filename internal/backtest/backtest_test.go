@@ -82,7 +82,7 @@ func TestSpotGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rep.Guard.Fired || !rep.Guard.Time.Equal(t0) || !strings.Contains(rep.Guard.Reason, "spot loss guard") {
+	if !rep.Guard.Fired || rep.Guard.Time == nil || !rep.Guard.Time.Equal(t0) || !strings.Contains(rep.Guard.Reason, "spot loss guard") {
 		t.Fatalf("guard %+v", rep.Guard)
 	}
 	near(t, "guard price", rep.Guard.Price, 85.5)

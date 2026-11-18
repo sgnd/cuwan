@@ -31,10 +31,10 @@ type Config struct {
 
 // Guard says whether a guard stopped the bot, and when.
 type Guard struct {
-	Fired  bool      `json:"fired"`
-	Time   time.Time `json:"time,omitempty"`
-	Price  float64   `json:"price,omitempty"`
-	Reason string    `json:"reason,omitempty"`
+	Fired  bool       `json:"fired"`
+	Time   *time.Time `json:"time,omitempty"` // nil when no guard fired
+	Price  float64    `json:"price,omitempty"`
+	Reason string     `json:"reason,omitempty"`
 }
 
 // Report is the result of one replay. Money is in the quote currency.
@@ -231,7 +231,7 @@ func (s *sim) guard(c Candle) {
 
 func (s *sim) stop(t time.Time, px float64, reason string) {
 	s.stopped = true
-	s.rep.Guard = Guard{Fired: true, Time: t, Price: px, Reason: reason}
+	s.rep.Guard = Guard{Fired: true, Time: &t, Price: px, Reason: reason}
 	for i := range s.orders {
 		s.orders[i].open = false
 	}
