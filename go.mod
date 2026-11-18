@@ -3,7 +3,7 @@ module github.com/sgnd/cuwan
 go 1.26.11
 
 require (
-	golang.org/x/crypto v0.31.0
+	golang.org/x/crypto v0.52.0
 	modernc.org/sqlite v1.62.0
 )
 
