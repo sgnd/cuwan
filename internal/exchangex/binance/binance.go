@@ -65,6 +65,8 @@ type Driver struct {
 	market string
 	base   string
 	client *http.Client
+	// sapiBase overrides the /sapi host in tests.
+	sapiBase string
 }
 
 func (d *Driver) Name() string   { return "binance" }
@@ -210,7 +212,7 @@ func (d *Driver) OpenOrders(ctx context.Context, symbol string) ([]exchangex.Ord
 		out = append(out, exchangex.Order{
 			ID: strconv.FormatInt(r.OrderID, 10), ClientOID: r.ClientOrderID,
 			Symbol: r.Symbol, Side: strings.ToLower(r.Side), Price: px, Qty: qty,
-			Filled: filled, Status: strings.ToLower(r.Status), ReduceOnly: r.ReduceOnly,
+			Filled: filled, Status: normStatus(r.Status), ReduceOnly: r.ReduceOnly,
 		})
 	}
 	return out, nil
@@ -253,7 +255,7 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 	return exchangex.Order{
 		ID: strconv.FormatInt(raw.OrderID, 10), ClientOID: raw.ClientOrderID,
 		Symbol: raw.Symbol, Side: strings.ToLower(raw.Side), Price: px, Qty: qty,
-		Status: strings.ToLower(raw.Status), ReduceOnly: req.ReduceOnly,
+		Status: normStatus(raw.Status), ReduceOnly: req.ReduceOnly,
 	}, nil
 }
 
@@ -286,28 +288,100 @@ func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) er
 	return d.signed(ctx, http.MethodPost, "/fapi/v1/leverage", q, &struct{}{})
 }
 
+// Permissions reports whether the key can withdraw. Mainnet keys are checked
+// with /sapi/v1/account/apiRestrictions (the same endpoint for spot and USD-M
+// keys). Testnet keys hold no real funds, so they are reported as trade-only.
 func (d *Driver) Permissions(ctx context.Context) (exchangex.Permissions, error) {
 	if d.cfg.Paper || d.cfg.APIKey == "" {
 		return exchangex.Permissions{CanRead: true}, nil
 	}
-	// Spot account endpoint implies read+trade when it succeeds; withdrawal
-	// restriction is not always exposed — document least-privilege in SECURITY.md.
-	p := exchangex.Permissions{CanRead: true, CanTrade: true, CanWithdraw: false}
-	if d.market == exchangex.MarketSpot {
-		var raw struct {
-			Permissions []string `json:"permissions"`
-		}
-		if err := d.signed(ctx, http.MethodGet, "/api/v3/account", nil, &raw); err != nil {
-			return p, err
-		}
-		for _, perm := range raw.Permissions {
-			if strings.EqualFold(perm, "Withdraw") {
-				p.CanWithdraw = true
-			}
-		}
-		p.Raw = strings.Join(raw.Permissions, ",")
+	if d.cfg.Testnet {
+		return exchangex.Permissions{CanRead: true, CanTrade: true, Raw: "testnet"}, nil
 	}
-	return p, nil
+	var raw struct {
+		EnableReading        bool `json:"enableReading"`
+		EnableSpot           bool `json:"enableSpotAndMarginTrading"`
+		EnableFutures        bool `json:"enableFutures"`
+		EnableWithdrawals    bool `json:"enableWithdrawals"`
+		EnableInternalTransf bool `json:"enableInternalTransfer"`
+		PermitsUniversalTran bool `json:"permitsUniversalTransfer"`
+	}
+	if err := d.signedAt(ctx, d.restrictionsBase(), http.MethodGet, "/sapi/v1/account/apiRestrictions", nil, &raw); err != nil {
+		return exchangex.Permissions{}, err
+	}
+	trade := raw.EnableSpot
+	if d.market == exchangex.MarketUSDM {
+		trade = raw.EnableFutures
+	}
+	return exchangex.Permissions{
+		CanRead:  raw.EnableReading,
+		CanTrade: trade,
+		// Internal and universal transfers also move funds off the bot's wallet.
+		CanWithdraw: raw.EnableWithdrawals || raw.EnableInternalTransf || raw.PermitsUniversalTran,
+		Raw:         fmt.Sprintf("withdraw=%v internal_transfer=%v universal_transfer=%v", raw.EnableWithdrawals, raw.EnableInternalTransf, raw.PermitsUniversalTran),
+	}, nil
+}
+
+// restrictionsBase is the spot API host, where /sapi lives for every key.
+func (d *Driver) restrictionsBase() string {
+	if d.sapiBase != "" {
+		return d.sapiBase
+	}
+	return spotBase(false)
+}
+
+// OrderStatus reports one order by exchange ID or client order ID.
+func (d *Driver) OrderStatus(ctx context.Context, symbol, orderID, clientOID string) (exchangex.Order, error) {
+	if d.cfg.Paper {
+		return exchangex.Order{}, fmt.Errorf("binance: paper mode refuses signed OrderStatus")
+	}
+	q := url.Values{"symbol": {symbol}}
+	if orderID != "" {
+		q.Set("orderId", orderID)
+	} else if clientOID != "" {
+		q.Set("origClientOrderId", clientOID)
+	} else {
+		return exchangex.Order{}, fmt.Errorf("binance: OrderStatus needs an order ID")
+	}
+	path := "/api/v3/order"
+	if d.market == exchangex.MarketUSDM {
+		path = "/fapi/v1/order"
+	}
+	var r struct {
+		OrderID       int64  `json:"orderId"`
+		ClientOrderID string `json:"clientOrderId"`
+		Symbol        string `json:"symbol"`
+		Side          string `json:"side"`
+		Price         string `json:"price"`
+		OrigQty       string `json:"origQty"`
+		ExecutedQty   string `json:"executedQty"`
+		Status        string `json:"status"`
+	}
+	if err := d.signed(ctx, http.MethodGet, path, q, &r); err != nil {
+		return exchangex.Order{}, err
+	}
+	px, _ := strconv.ParseFloat(r.Price, 64)
+	qty, _ := strconv.ParseFloat(r.OrigQty, 64)
+	filled, _ := strconv.ParseFloat(r.ExecutedQty, 64)
+	return exchangex.Order{
+		ID: strconv.FormatInt(r.OrderID, 10), ClientOID: r.ClientOrderID,
+		Symbol: r.Symbol, Side: strings.ToLower(r.Side), Price: px, Qty: qty,
+		Filled: filled, Status: normStatus(r.Status),
+	}, nil
+}
+
+// normStatus maps Binance order states to the runtime states cuwan uses:
+// open, filled, canceled. A partly filled order is still open.
+func normStatus(s string) string {
+	switch strings.ToUpper(s) {
+	case "NEW", "PARTIALLY_FILLED", "PENDING_NEW", "PENDING_CANCEL":
+		return "open"
+	case "FILLED":
+		return "filled"
+	case "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED":
+		return "canceled"
+	}
+	return "unknown"
 }
 
 func (d *Driver) getPublic(ctx context.Context, path string, q url.Values, dest any) error {
@@ -335,6 +409,10 @@ func (d *Driver) getPublic(ctx context.Context, path string, q url.Values, dest 
 }
 
 func (d *Driver) signed(ctx context.Context, method, path string, q url.Values, dest any) error {
+	return d.signedAt(ctx, d.base, method, path, q, dest)
+}
+
+func (d *Driver) signedAt(ctx context.Context, base, method, path string, q url.Values, dest any) error {
 	if d.cfg.APIKey == "" || d.cfg.APISecret == "" {
 		return fmt.Errorf("binance: missing API credentials")
 	}
@@ -346,7 +424,7 @@ func (d *Driver) signed(ctx context.Context, method, path string, q url.Values, 
 	mac := hmac.New(sha256.New, []byte(d.cfg.APISecret))
 	mac.Write([]byte(payload))
 	sig := hex.EncodeToString(mac.Sum(nil))
-	u := d.base + path + "?" + payload + "&signature=" + sig
+	u := base + path + "?" + payload + "&signature=" + sig
 	req, err := http.NewRequestWithContext(ctx, method, u, nil)
 	if err != nil {
 		return err
