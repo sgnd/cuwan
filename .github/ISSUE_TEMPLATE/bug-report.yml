@@ -24,7 +24,7 @@ body:
     attributes:
       label: cuwan version
       description: Run `cuwan version`
-      placeholder: v0.1.0
+      placeholder: v0.0.1
     validations:
       required: true
   - type: input
