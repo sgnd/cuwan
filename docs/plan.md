@@ -135,7 +135,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 
 | Item | Status |
 |---|---|
-| Backtest a grid on public historical candles before running it | open |
+| Backtest a grid on public historical candles before running it | done: `cuwan backtest` (Binance candles) |
 | Paper vs live profit report (realised, unrealised, fees) per bot | done: `cuwan report`; one runtime per bot, so a bot shows the mode it last ran in |
 | Local alerts on fill, stop, and preventive close (desktop notify, webhook the user sets) | open |
 | Agent access: MCP server or skill in `skills/` covering every command, with the same guardrails | open |

@@ -44,7 +44,7 @@ func cmdSchema(args []string) int {
 			"secret.set", "secret.list", "secret.show", "secret.rename",
 			"exchange.add", "exchange.list", "exchange.venues", "exchange.test",
 			"bot.add", "bot.list", "bot.show", "bot.edit", "bot.rm",
-			"paper.start", "paper.status", "paper.stop",
+			"paper.start", "paper.status", "paper.stop", "backtest",
 			"run.start", "run.status", "run.stop",
 			"orders", "positions", "balance", "audit", "report",
 		},
