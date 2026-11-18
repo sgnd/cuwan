@@ -33,7 +33,7 @@ live; Hyperliquid runs on its testnet.
   (tick, step, minimum size and value), and IOC orders.
 - Hyperliquid perps: signed orders, cancels and leverage, order status, and
   symbol rules (5 significant figures, $10 minimum).
-- `make testnet`: an opt-in round trip on the Binance testnet.
+- `make testnet`: opt-in round trips on the Binance and Hyperliquid testnets.
 - A registry of further venue ids for paper (catalog entries; no live use).
 
 ### Security
