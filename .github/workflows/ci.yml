@@ -1,39 +1,83 @@
+# Checks that run on GitHub after every push to main and every pull request.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
+  workflow_dispatch: # adds a "Run workflow" button on GitHub
+
+# least privilege: CI only reads the code (OpenSSF Scorecard: Token-Permissions)
+permissions:
+  contents: read
 
 jobs:
+  # Formatting, go vet, unit tests, and a build.
   test:
+    name: Lint and unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # actions are pinned to a commit, not a tag that can move (Pinned-Dependencies)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Test
-        run: make test
+      - run: make lint
+      - run: make test
         env:
           CUWAN_KEYCHAIN: "off"
-      - name: Build static binary
-        run: make build
+      - run: make build
       - name: Verify static / version
         run: |
           file bin/cuwan || true
           ./bin/cuwan version
           CGO_ENABLED=0 go version -m bin/cuwan | head -5
-      - name: Vet
-        run: make lint
+
+  # Every OS/arch cuwan ships for: vet, compile tests, and a build. Pure Go
+  # (CGO_ENABLED=0), so one Linux runner checks them all.
+  cross:
+    name: Build and vet (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux]
+        goarch: [amd64, arm64]
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build -o /dev/null ./cmd/cuwan
+      - run: for p in $(go list ./...); do go test -c -o /dev/null "$p" || exit 1; done
+
+  # Known vulnerabilities in the code and its modules (govulncheck).
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make security
 
   release-check:
+    name: Release cross-build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Cross-build

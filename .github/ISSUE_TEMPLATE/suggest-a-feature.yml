@@ -1,0 +1,33 @@
+name: Suggest a feature
+description: A task you want cuwan to do for you or your AI agent
+labels: [enhancement]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: What do you want to do?
+      description: The task, not the solution. For example "paper-trade a grid on Hyperliquid ETH".
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today?
+      description: The tools or commands you use now (exchange UI, another bot, scripts, ...)
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could cuwan help?
+      description: Optional. A command you imagine, like `cuwan paper start eth-grid`.
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Does it fit cuwan?
+      description: See [CONTRIBUTING.md](https://github.com/sgnd/cuwan/blob/main/CONTRIBUTING.md#before-you-add-something).
+      options:
+        - label: It fits local trading / grid work, or the shared foundation (store, secrets, output)
+          required: true
+        - label: It can work as a plain command, for a person and for an AI agent (no prompt an agent cannot meet)
+          required: true
