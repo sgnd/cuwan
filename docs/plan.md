@@ -99,7 +99,9 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Item | Status |
 |---|---|
 | Binance spot and USD-M testnet: signed orders, permission probe | open |
-| `OrderStatus` in native drivers (without it the live loop never refills) | open |
+| `OrderStatus` in native drivers (without it the live loop never refills) | done for Binance; Hyperliquid open |
+| Binance order states normalised to open, filled, canceled (`NEW` was stored as `new`, which the loop skipped) | done |
+| Binance key check via `/sapi/v1/account/apiRestrictions` (USD-M was never checked; spot read the wrong field) | done |
 | Hyperliquid testnet: L1 signing (today returns an error) | open |
 | Opt-in integration tests behind an env flag, testnet keys only | open |
 | Catalog venues stay `paper-only` or `stub` until a native driver lands | deferred: waits on M4 drivers above |
