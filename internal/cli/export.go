@@ -255,7 +255,8 @@ func fileNames(f exportFile) []string {
 	return keys
 }
 
-// importAudit appends entries this home does not hold yet, so a second import adds nothing.
+// importAudit appends entries this home does not hold yet, marked imported,
+// so a second import adds nothing.
 func importAudit(rows []json.RawMessage, dry bool) (int, error) {
 	if len(rows) == 0 {
 		return 0, nil
@@ -270,9 +271,20 @@ func importAudit(rows []json.RawMessage, dry bool) (int, error) {
 	}
 	var add [][]byte
 	for _, r := range rows {
-		if !seen[string(r)] {
-			seen[string(r)] = true
-			add = append(add, r)
+		// Mark each entry as imported: a file can say anything, and the audit
+		// log must not show it as something done on this machine.
+		var m map[string]any
+		if err := json.Unmarshal(r, &m); err != nil {
+			return 0, fmt.Errorf("audit entry is not a JSON object: %w", err)
+		}
+		m["imported"] = true
+		b, err := json.Marshal(m)
+		if err != nil {
+			return 0, err
+		}
+		if !seen[string(b)] {
+			seen[string(b)] = true
+			add = append(add, b)
 		}
 	}
 	if dry || len(add) == 0 {

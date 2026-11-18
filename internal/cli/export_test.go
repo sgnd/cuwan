@@ -186,3 +186,29 @@ func TestImportBadVersion(t *testing.T) {
 		t.Fatalf("want version error, got %+v", env)
 	}
 }
+
+// Imported audit entries are marked, so a file cannot pass off its history
+// as work done on this machine.
+func TestImportedAuditIsMarked(t *testing.T) {
+	file := exportTo(t)
+	freshHome(t)
+	if code, env := call(t, "import", file, "--yes"); code != 0 {
+		t.Fatalf("import: %+v", env)
+	}
+	rows, err := store.ListAudit(1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		if strings.Contains(string(r), "test.entry") {
+			found = true
+			if !strings.Contains(string(r), `"imported":true`) {
+				t.Fatalf("imported entry not marked: %s", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("audit entry not imported")
+	}
+}
