@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	alertpkg "github.com/sgnd/cuwan/internal/alert"
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/grid"
 	"github.com/sgnd/cuwan/internal/live"
@@ -161,14 +162,18 @@ func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int
 			rt.Status = "unguarded"
 			_ = save()
 			_ = store.AppendAudit("run.signal", map[string]any{"bot": bot.Name})
-			alert(bot.Name, "loop ended by signal; orders are still on the book and unguarded; run `cuwan run stop "+bot.Name+"`")
+			alert(bot.Name, alertpkg.KindUnguarded, "loop ended by signal; orders are still on the book and unguarded; run `cuwan run stop "+bot.Name+"`")
 			return 0
 		case <-tick.C:
 		}
 		if live.StopRequested(bot.Name) {
 			return 0 // release the lock; `run stop` takes over
 		}
+		before := filledCount(rt)
 		res, err := live.Step(ctx, bot, drv, rt, save)
+		if n := filledCount(rt) - before; n > 0 {
+			alert(bot.Name, alertpkg.KindFill, fmt.Sprintf("%d order(s) filled", n))
+		}
 		var ce *live.CloseError
 		if errors.As(err, &ce) {
 			return halt(ctx, bot, drv, rt, save, ce.Error())
@@ -184,7 +189,7 @@ func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int
 		fails = 0
 		if res.Stopped {
 			_ = store.AppendAudit("run.guard", map[string]any{"bot": bot.Name, "reason": res.Reason})
-			alert(bot.Name, res.Reason)
+			alert(bot.Name, alertpkg.KindGuard, res.Reason)
 			return 0
 		}
 	}
@@ -202,13 +207,25 @@ func halt(ctx context.Context, bot *store.Bot, drv exchangex.Exchange, rt *store
 	rt.Meta["halt_reason"] = reason
 	_ = save()
 	_ = store.AppendAudit("run.halt", map[string]any{"bot": bot.Name, "reason": reason})
-	alert(bot.Name, "HALTED: "+reason+"; check open orders and positions on the venue")
+	alert(bot.Name, alertpkg.KindHalt, "HALTED: "+reason+"; check open orders and positions on the venue")
 	return out.Fail("run.loop", fmt.Errorf("bot %s halted: %s", bot.Name, reason), 1)
 }
 
-// alert tells a person. Local notifications are planned (M6).
-func alert(bot, msg string) {
+// alert tells a person on stderr and on the channels set with `cuwan alert set`.
+func alert(bot, kind, msg string) {
 	fmt.Fprintf(os.Stderr, "cuwan ALERT [%s]: %s\n", bot, msg)
+	alertpkg.Notify(alertpkg.Event{Bot: bot, Kind: kind, Message: msg, Time: time.Now().UTC()})
+}
+
+// filledCount counts filled orders, so the loop can tell a person about new fills.
+func filledCount(rt *store.RuntimeState) int {
+	n := 0
+	for _, o := range rt.Orders {
+		if o.Status == live.StatusFilled {
+			n++
+		}
+	}
+	return n
 }
 
 func runStatus(args []string) int {
@@ -264,7 +281,7 @@ func runStop(args []string) int {
 		save := func() error { return store.PutRuntime(rt) }
 		if flagBool(args, "--flatten") {
 			if err := live.Flatten(ctx, bot, drv, rt, save); err != nil {
-				alert(bot.Name, "flatten failed: "+err.Error())
+				alert(bot.Name, alertpkg.KindStop, "flatten failed: "+err.Error())
 				return out.Fail("run.stop", fmt.Errorf("flatten: %w (bot left as is; retry or close by hand)", err), 1)
 			}
 			_ = store.AppendAudit("run.flatten", map[string]any{"bot": bot.Name})

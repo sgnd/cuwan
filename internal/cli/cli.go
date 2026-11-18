@@ -57,6 +57,8 @@ func run(args []string) int {
 		return cmdBalance(args[1:])
 	case "audit":
 		return cmdAudit(args[1:])
+	case "alert":
+		return cmdAlert(args[1:])
 	case "help", "-h", "--help":
 		printRootHelp(os.Stdout)
 		return 0
@@ -80,6 +82,7 @@ BOTS         bot add|list|show|edit|rm · draft-range (stub)
 PAPER        paper start|status|stop
 LIVE         run start|status|stop
 READ         orders · positions · balance · audit
+ALERTS       alert set|show|test
 
 Venues: live on binance; hyperliquid on testnet; other ids are catalog entries for paper.
 Paper uses public tickers where wired; secrets stay secret:NAME.

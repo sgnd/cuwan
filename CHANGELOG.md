@@ -35,6 +35,8 @@ live; Hyperliquid runs on its testnet.
   symbol rules (5 significant figures, $10 minimum).
 - `make testnet`: opt-in round trips on the Binance and Hyperliquid testnets.
 - A registry of further venue ids for paper (catalog entries; no live use).
+- `cuwan alert set|show|test`: desktop notifications and an HTTPS webhook
+  (stored as `secret:NAME`) for fills, guards, halts, unguarded bots and stops.
 
 ### Security
 

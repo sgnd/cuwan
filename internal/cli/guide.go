@@ -47,6 +47,7 @@ func cmdSchema(args []string) int {
 			"paper.start", "paper.status", "paper.stop",
 			"run.start", "run.status", "run.stop",
 			"orders", "positions", "balance", "audit",
+			"alert.set", "alert.show", "alert.test",
 		},
 		"secret_display": []string{"[hidden]", "[secret:NAME]"},
 		"guardrails": map[string]any{
