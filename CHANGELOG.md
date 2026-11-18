@@ -35,6 +35,8 @@ live; Hyperliquid runs on its testnet.
   symbol rules (5 significant figures, $10 minimum).
 - `make testnet`: opt-in round trips on the Binance and Hyperliquid testnets.
 - A registry of further venue ids for paper (catalog entries; no live use).
+- `cuwan report [NAME] [--fee 0.1%]`: realised (FIFO) and unrealised profit,
+  estimated fees, fills and round trips per bot, from the local store only.
 
 ### Security
 

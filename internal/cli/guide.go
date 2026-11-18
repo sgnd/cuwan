@@ -46,7 +46,7 @@ func cmdSchema(args []string) int {
 			"bot.add", "bot.list", "bot.show", "bot.edit", "bot.rm",
 			"paper.start", "paper.status", "paper.stop",
 			"run.start", "run.status", "run.stop",
-			"orders", "positions", "balance", "audit",
+			"orders", "positions", "balance", "audit", "report",
 		},
 		"secret_display": []string{"[hidden]", "[secret:NAME]"},
 		"guardrails": map[string]any{
