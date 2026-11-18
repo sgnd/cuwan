@@ -147,7 +147,20 @@ func Save(s Settings) error {
 var Desktop = desktop
 
 // Client sends webhooks. Tests replace it to trust a test server.
-var Client = &http.Client{Timeout: 5 * time.Second}
+var Client = &http.Client{
+	Timeout: 5 * time.Second,
+	// A redirect must stay on HTTPS, or the body would leave in clear text.
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" || len(via) >= 3 {
+			return errors.New("webhook redirect refused")
+		}
+		return nil
+	},
+}
+
+// desktopTimeout bounds a notification: the live loop waits for it, and a
+// hung notifier must not delay the protective close.
+const desktopTimeout = 5 * time.Second
 
 // Notify sends ev to each enabled channel and audits any failure.
 func Notify(ev Event) {
@@ -227,6 +240,8 @@ func webhook(ref string, ev Event) error {
 
 // desktop passes the text as arguments, never as shell or script source.
 func desktop(title, msg string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), desktopTimeout)
+	defer cancel()
 	switch runtime.GOOS {
 	case "darwin":
 		p, err := exec.LookPath("osascript")
@@ -236,13 +251,13 @@ func desktop(title, msg string) error {
 		script := `on run argv
 display notification (item 2 of argv) with title (item 1 of argv)
 end run`
-		return exec.Command(p, "-e", script, title, msg).Run()
+		return exec.CommandContext(ctx, p, "-e", script, title, msg).Run()
 	case "linux":
 		p, err := exec.LookPath("notify-send")
 		if err != nil {
 			return nil
 		}
-		return exec.Command(p, "--", title, msg).Run()
+		return exec.CommandContext(ctx, p, "--", title, msg).Run()
 	}
 	return nil
 }

@@ -176,3 +176,21 @@ func TestAlertWebhookHTTPSOnly(t *testing.T) {
 		t.Fatalf("http accepted or leaked: %s", b)
 	}
 }
+
+// A webhook that redirects to plain HTTP is refused, so the body never
+// leaves in clear text.
+func TestWebhookRedirectToHTTPRefused(t *testing.T) {
+	hits := 0
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	t.Cleanup(plain.Close)
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(tlsSrv.Close)
+	c := tlsSrv.Client()
+	c.CheckRedirect = alertpkg.Client.CheckRedirect
+	req, _ := http.NewRequest(http.MethodPost, tlsSrv.URL, nil)
+	if _, err := c.Do(req); err == nil || hits != 0 {
+		t.Fatalf("redirect to http followed: err=%v hits=%d", err, hits)
+	}
+}
