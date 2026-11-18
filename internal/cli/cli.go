@@ -55,6 +55,8 @@ func run(args []string) int {
 		return cmdPositions(args[1:])
 	case "balance":
 		return cmdBalance(args[1:])
+	case "backtest":
+		return cmdBacktest(args[1:])
 	case "audit":
 		return cmdAudit(args[1:])
 	case "help", "-h", "--help":
@@ -78,6 +80,7 @@ VAULT        secret set|list|show|rename
 VENUE        exchange add|list|venues|test
 BOTS         bot add|list|show|edit|rm · draft-range (stub)
 PAPER        paper start|status|stop
+TEST         backtest NAME [--from] [--to] [--interval] [--fee]
 LIVE         run start|status|stop
 READ         orders · positions · balance · audit
 
