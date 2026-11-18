@@ -36,6 +36,7 @@ const (
 	StatusFilled   = "filled"   // fully filled
 	StatusCanceled = "canceled" // off the book, maybe partly filled
 	StatusFailed   = "failed"   // the venue never got it
+	StatusUnknown  = "unknown"  // the venue gave a state cuwan does not know; checked again
 )
 
 // closeSlip makes the reduce-only close limit price cross the book.
@@ -259,7 +260,7 @@ func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.
 	}
 	for i, n := 0, len(rt.Orders); i < n; i++ {
 		o := rt.Orders[i]
-		if o.Status != StatusOpen || o.ReduceOnly {
+		if (o.Status != StatusOpen && o.Status != StatusUnknown) || o.ReduceOnly {
 			continue
 		}
 		if b, ok := find(o); ok {

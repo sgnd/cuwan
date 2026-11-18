@@ -299,5 +299,6 @@ func takeOver(bot string) (*live.Lock, error) {
 			return lock, err
 		}
 	}
+	live.ClearStop(bot) // do not leave a request that would stop a later loop
 	return nil, fmt.Errorf("the running loop did not stop within %s; nothing was cancelled", stopWait)
 }

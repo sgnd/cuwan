@@ -312,7 +312,7 @@ func TestRunStopTakesOverFromLoop(t *testing.T) {
 	stopWait = 300 * time.Millisecond
 	t.Cleanup(func() { stopWait = 60 * time.Second })
 	code, env := call(t, "run", "stop", "g", "--yes")
-	if code == 0 || !strings.Contains(env.Error, "did not stop") || !live.StopRequested("g") {
+	if code == 0 || !strings.Contains(env.Error, "did not stop") || live.StopRequested("g") {
 		t.Fatalf("stop ran under a held lock: %d %+v", code, env)
 	}
 	held.Unlock()

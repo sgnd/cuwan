@@ -80,7 +80,14 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Review of PR #6, 5 (medium): flatten closed the whole symbol position | done: closes the bot's own net size; refuses when the venue position does not cover it |
 | Review of PR #6, low: partial fills, empty IDs, close price and close check | done: partial fills count; empty IDs never match; fresh price for the close; close must be filled |
 | Local alerts beyond stderr for halts and guards | open: see M6 alerts |
-| Detached live worker (like paper), so the loop survives the terminal | open |
+| Re-review N1 (high): live start without the loop left the bot unguarded | done: live start needs `--foreground`; a signal marks the bot `unguarded` |
+| Re-review N2: prices and sizes not rounded to the venue filters | done: drivers report tick, step, minimum size; live start refuses drivers that cannot |
+| Re-review N3: not-found right after a timeout marked the order failed | done: 3 lookups over 2 minutes first; stop cancels pending orders by client ID |
+| Re-review N4: start over a halted bot dropped the old runtime | done: start refuses until `run stop` |
+| Re-review N5: the close was a GTC limit and could leave the position open | done: reduce-only IOC, 3 tries with fresh prices, venue position must shrink |
+| Re-review low: stop file left after timeout; `unknown` never rechecked; not-found on cancel; late fills on stop | done |
+| Re-review low: Binance hedge mode (`positionSide`) | open: refuse hedge-mode accounts or send `positionSide` |
+| Detached live worker (like paper), so the loop survives the terminal | open: until then live start needs `--foreground` |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |
 | Tests for the loop against the fake driver | done |
 

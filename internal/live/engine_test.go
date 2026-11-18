@@ -563,3 +563,17 @@ func (n noShrink) PlaceOrder(ctx context.Context, r exchangex.PlaceReq) (exchang
 	n.pos = keep
 	return o, err
 }
+
+// Low: an order in an unknown state is checked again on the next step.
+func TestUnknownIsCheckedAgain(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	rt.Orders[1].Status = StatusUnknown
+	b.fill(t, "buy", 95)
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Orders[1].Status != StatusFilled || len(b.placed) != 1 {
+		t.Fatalf("%+v placed=%v", rt.Orders[1], b.placed)
+	}
+}
