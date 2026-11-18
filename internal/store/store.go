@@ -234,7 +234,7 @@ const (
 // Exchange is a venue credential reference.
 type Exchange struct {
 	Name      string    `json:"name"`
-	Venue     string    `json:"venue"` // binance | hyperliquid
+	Venue     string    `json:"venue"` // registered id (cuwan exchange venues)
 	Market    string    `json:"market"` // spot | usdm | perp
 	SecretRef string    `json:"secret_ref"` // secret:NAME
 	Testnet   bool      `json:"testnet,omitempty"`

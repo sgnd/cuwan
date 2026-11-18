@@ -13,6 +13,7 @@ import (
 	"github.com/sgnd/cuwan/internal/out"
 
 	_ "github.com/sgnd/cuwan/internal/exchangex/binance"
+	_ "github.com/sgnd/cuwan/internal/exchangex/catalog"
 	_ "github.com/sgnd/cuwan/internal/exchangex/hyperliquid"
 )
 
@@ -71,13 +72,14 @@ agents set CUWAN_AGENT=1 for JSON and no prompts.
 
 START        version · doctor · guide · schema
 VAULT        secret set|list|show|rename
-VENUE        exchange add|list|test
+VENUE        exchange add|list|venues|test
 BOTS         bot add|list|show|edit|rm · draft-range (stub)
 PAPER        paper start|status|stop
 LIVE         run start|status|stop
 READ         orders · positions · balance · audit
 
-Venues: binance (spot, usdm) · hyperliquid (perp)
+Venues: 100+ CEX/DEX ids (cuwan exchange venues). Native: binance, hyperliquid.
+Paper uses public tickers where wired; secrets stay secret:NAME.
 Guardrails: 20x leverage cap · ~5% preventive reduce-only close (always on)
 `)+"\n")
 }

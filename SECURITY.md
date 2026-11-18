@@ -25,11 +25,15 @@ changed.
 
 ## Least-privilege keys
 
-- **Binance:** create an API key with spot and/or futures trading only.
-  Disable withdrawals. Prefer IP allowlists. Store the secret as
-  `secret:NAME` via `cuwan secret set`, never on argv.
-- **Hyperliquid:** keep the trading wallet private key only in the vault.
-  Prefer an API wallet with limited permissions when the venue supports it.
+- Store every venue credential as `secret:NAME` via `cuwan secret set`,
+  never on argv. Agent output shows `[hidden]` / `[secret:NAME]` only.
+- **Binance (native live):** create an API key with spot and/or futures
+  trading only. Disable withdrawals. Prefer IP allowlists.
+- **Hyperliquid (native paper):** keep the trading wallet private key only
+  in the vault. Prefer an API wallet with limited permissions when the
+  venue supports it.
+- **Other registered venues:** paper uses public tickers where wired; live
+  trading stays off until a native/library adapter is enabled for that id.
 
 ## Local store
 
