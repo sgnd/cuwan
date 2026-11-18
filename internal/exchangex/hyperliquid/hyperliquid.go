@@ -4,11 +4,15 @@ package hyperliquid
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
@@ -205,12 +209,128 @@ func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) er
 	return fmt.Errorf("hyperliquid: live SetLeverage signing not enabled in this build")
 }
 
+// Permissions fails closed for live use. A main wallet key can withdraw;
+// only an approved API wallet cannot, and proving which one the secret is
+// needs the signer (not in this build).
 func (d *Driver) Permissions(ctx context.Context) (exchangex.Permissions, error) {
-	return exchangex.Permissions{
-		CanRead: true, CanTrade: d.cfg.APISecret != "" && !d.cfg.Paper,
-		CanWithdraw: false,
-		Raw:         "wallet",
+	if d.cfg.Paper || d.cfg.APISecret == "" {
+		return exchangex.Permissions{CanRead: true}, nil
+	}
+	return exchangex.Permissions{}, fmt.Errorf("hyperliquid: cannot prove the key is an API wallet (no withdraw rights) until signing lands")
+}
+
+// Cloid maps a cuwan client order ID to Hyperliquid's 16-byte hex cloid.
+func Cloid(clientOID string) string {
+	sum := sha256.Sum256([]byte(clientOID))
+	return "0x" + hex.EncodeToString(sum[:16])
+}
+
+// OrderStatus reports one order by oid or by client order ID.
+func (d *Driver) OrderStatus(ctx context.Context, symbol, orderID, clientOID string) (exchangex.Order, error) {
+	if d.cfg.APIKey == "" {
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: OrderStatus needs the account address")
+	}
+	var oid any
+	switch {
+	case orderID != "":
+		n, err := strconv.ParseInt(orderID, 10, 64)
+		if err != nil {
+			return exchangex.Order{}, fmt.Errorf("hyperliquid: bad oid %q", orderID)
+		}
+		oid = n
+	case clientOID != "":
+		oid = Cloid(clientOID)
+	default:
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: OrderStatus needs an order ID")
+	}
+	var raw struct {
+		Status string `json:"status"`
+		Order  struct {
+			Order struct {
+				Coin    string `json:"coin"`
+				Side    string `json:"side"`
+				LimitPx string `json:"limitPx"`
+				Sz      string `json:"sz"`
+				OrigSz  string `json:"origSz"`
+				Oid     int64  `json:"oid"`
+			} `json:"order"`
+			Status string `json:"status"`
+		} `json:"order"`
+	}
+	if err := d.postJSON(ctx, d.infoURL, map[string]any{"type": "orderStatus", "user": d.cfg.APIKey, "oid": oid}, &raw); err != nil {
+		return exchangex.Order{}, err
+	}
+	if raw.Status != "order" {
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: %w", exchangex.ErrOrderNotFound)
+	}
+	o := raw.Order.Order
+	px, _ := strconv.ParseFloat(o.LimitPx, 64)
+	left, _ := strconv.ParseFloat(o.Sz, 64)
+	orig, _ := strconv.ParseFloat(o.OrigSz, 64)
+	side := exchangex.SideBuy
+	if o.Side == "A" {
+		side = exchangex.SideSell
+	}
+	return exchangex.Order{
+		ID: strconv.FormatInt(o.Oid, 10), ClientOID: clientOID, Symbol: o.Coin, Side: side,
+		Price: px, Qty: orig, Filled: orig - left, Status: normStatus(raw.Order.Status),
 	}, nil
+}
+
+// normStatus maps Hyperliquid order states to open, filled, canceled.
+func normStatus(s string) string {
+	switch {
+	case s == "open" || s == "triggered":
+		return "open"
+	case s == "filled":
+		return "filled"
+	case s == "canceled" || s == "rejected" || strings.HasSuffix(s, "Canceled") || strings.HasSuffix(s, "Rejected"):
+		return "canceled"
+	}
+	return "unknown"
+}
+
+// minOrderValue is Hyperliquid's minimum order value in USD.
+const minOrderValue = 10
+
+// Rules derives filters from meta. Size step is 10^-szDecimals. Prices allow
+// at most 5 significant figures and 6-szDecimals decimals, so the tick
+// depends on the price and is computed from the current mid on every call.
+func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRules, error) {
+	var meta struct {
+		Universe []struct {
+			Name       string `json:"name"`
+			SzDecimals int    `json:"szDecimals"`
+		} `json:"universe"`
+	}
+	if err := d.postJSON(ctx, d.infoURL, map[string]any{"type": "meta"}, &meta); err != nil {
+		return exchangex.SymbolRules{}, err
+	}
+	for _, u := range meta.Universe {
+		if u.Name != symbol {
+			continue
+		}
+		t, err := d.Ticker(ctx, symbol)
+		if err != nil {
+			return exchangex.SymbolRules{}, err
+		}
+		step := math.Pow(10, -float64(u.SzDecimals))
+		return exchangex.SymbolRules{
+			Tick: tickFor(t.Price, u.SzDecimals), Step: step, MinQty: step, MinNotional: minOrderValue,
+		}, nil
+	}
+	return exchangex.SymbolRules{}, fmt.Errorf("hyperliquid: unknown coin %s", symbol)
+}
+
+// tickFor is the coarser of the decimals limit and the 5-significant-figure limit.
+func tickFor(price float64, szDecimals int) float64 {
+	tick := math.Pow(10, -float64(6-szDecimals))
+	if price > 0 {
+		if sig := math.Pow(10, math.Floor(math.Log10(price))-4); sig > tick {
+			tick = sig
+		}
+	}
+	return tick
 }
 
 func (d *Driver) postJSON(ctx context.Context, endpoint string, body any, dest any) error {

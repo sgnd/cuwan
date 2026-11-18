@@ -100,7 +100,10 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Item | Status |
 |---|---|
 | Binance spot and USD-M testnet: signed orders, permission probe | open |
-| `OrderStatus` in native drivers (without it the live loop never refills) | done for Binance; Hyperliquid open |
+| `OrderStatus` in native drivers (without it the live loop never refills) | done for Binance and Hyperliquid (cloid is a hash of the cuwan client order ID) |
+| Hyperliquid rules from meta: size step, price tick from 5 significant figures, $10 minimum | done |
+| Hyperliquid key check said a wallet key cannot withdraw without checking | done: fails closed until the signer can prove an API wallet |
+| Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | open: needs the owner's yes and its own review |
 | Binance order states normalised to open, filled, canceled (`NEW` was stored as `new`, which the loop skipped) | done |
 | Binance key check via `/sapi/v1/account/apiRestrictions` (USD-M was never checked; spot read the wrong field) | done |
 | Hyperliquid testnet: L1 signing (today returns an error) | open |
