@@ -2,162 +2,373 @@ package live
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/store"
 )
 
-// book is a fake venue: orders stay open until the test fills them.
+// book is a fake venue keyed by client order ID.
 type book struct {
-	price   float64
-	open    map[string]exchangex.Order
-	filled  map[string]bool
-	pos     []exchangex.Position
-	placed  []exchangex.PlaceReq
-	cancels int
+	price    float64
+	orders   map[string]*exchangex.Order // every order the venue got
+	pos      []exchangex.Position
+	placed   []exchangex.PlaceReq
+	cancels  int
+	placeErr func(exchangex.PlaceReq) (reached bool, err error)
+	noClose  bool // closes stay open
+	posErr   error
+	n        int
 }
 
-func newBook(p float64) *book {
-	return &book{price: p, open: map[string]exchangex.Order{}, filled: map[string]bool{}}
-}
+func newBook(p float64) *book { return &book{price: p, orders: map[string]*exchangex.Order{}} }
 
 func (b *book) Name() string   { return "fake" }
 func (b *book) Market() string { return "usdm" }
 func (b *book) Ticker(context.Context, string) (exchangex.Ticker, error) {
 	return exchangex.Ticker{Price: b.price}, nil
 }
-func (b *book) Balances(context.Context) ([]exchangex.Balance, error)   { return nil, nil }
-func (b *book) Positions(context.Context) ([]exchangex.Position, error) { return b.pos, nil }
+func (b *book) Balances(context.Context) ([]exchangex.Balance, error) { return nil, nil }
+func (b *book) Positions(context.Context) ([]exchangex.Position, error) {
+	return b.pos, b.posErr
+}
 func (b *book) OpenOrders(context.Context, string) ([]exchangex.Order, error) {
 	var out []exchangex.Order
-	for _, o := range b.open {
-		out = append(out, o)
+	for _, o := range b.orders {
+		if o.Status == StatusOpen {
+			out = append(out, *o)
+		}
 	}
 	return out, nil
 }
 func (b *book) PlaceOrder(_ context.Context, r exchangex.PlaceReq) (exchangex.Order, error) {
 	b.placed = append(b.placed, r)
-	o := exchangex.Order{ID: "x" + r.ClientOID, ClientOID: r.ClientOID, Side: r.Side, Price: r.Price, Qty: r.Qty, Status: StatusOpen, ReduceOnly: r.ReduceOnly}
-	b.open[o.ID] = o
-	return o, nil
+	reached, err := true, error(nil)
+	if b.placeErr != nil {
+		reached, err = b.placeErr(r)
+	}
+	if !reached {
+		return exchangex.Order{}, err
+	}
+	b.n++
+	o := &exchangex.Order{ID: fmt.Sprint(b.n), ClientOID: r.ClientOID, Side: r.Side, Price: r.Price, Qty: r.Qty, Status: StatusOpen, ReduceOnly: r.ReduceOnly}
+	if r.ReduceOnly && !b.noClose {
+		o.Status, o.Filled = StatusFilled, r.Qty
+	}
+	b.orders[r.ClientOID] = o
+	return *o, err
 }
-func (b *book) CancelOrder(_ context.Context, _, id, _ string) error {
+func (b *book) CancelOrder(_ context.Context, _, _, cid string) error {
 	b.cancels++
-	delete(b.open, id)
+	if o, ok := b.orders[cid]; ok && o.Status == StatusOpen {
+		o.Status = StatusCanceled
+	}
 	return nil
 }
 func (b *book) SetLeverage(context.Context, string, float64) error { return nil }
 func (b *book) Permissions(context.Context) (exchangex.Permissions, error) {
 	return exchangex.Permissions{CanTrade: true}, nil
 }
-
-// fill removes an order from the book as filled.
-func (b *book) fill(id string) { delete(b.open, id); b.filled[id] = true }
-
-// statusBook adds OrderStatus, so the engine may trust fills.
-type statusBook struct{ *book }
-
-func (s statusBook) OrderStatus(_ context.Context, _, id, _ string) (exchangex.Order, error) {
-	if s.filled[id] {
-		return exchangex.Order{ID: id, Status: StatusFilled}, nil
+func (b *book) OrderStatus(_ context.Context, _, id, cid string) (exchangex.Order, error) {
+	for _, o := range b.orders {
+		if (cid != "" && o.ClientOID == cid) || (id != "" && o.ID == id) {
+			return *o, nil
+		}
 	}
-	return exchangex.Order{ID: id, Status: StatusCanceled}, nil
+	return exchangex.Order{}, fmt.Errorf("fake: %w", exchangex.ErrOrderNotFound)
 }
 
-func seed(b *book, bot *store.Bot) *store.RuntimeState {
+// fill fills the venue order at price px.
+func (b *book) fill(t *testing.T, side string, px float64) {
+	t.Helper()
+	for _, o := range b.orders {
+		if o.Side == side && o.Price == px && o.Status == StatusOpen {
+			o.Status, o.Filled = StatusFilled, o.Qty
+			return
+		}
+	}
+	t.Fatalf("no open %s at %g", side, px)
+}
+
+// noStatus hides OrderStatus.
+type noStatus struct{ exchangex.Exchange }
+
+var gridBot = &store.Bot{Name: "g", Symbol: "S", Lower: 90, Upper: 110, Levels: 5, OrderSize: 1}
+
+// start places the grid (90 95 | 105 110 around 100; 100 is a sell).
+func start(t *testing.T, b *book, bot *store.Bot) (*store.RuntimeState, Saver, *[]string) {
+	t.Helper()
 	rt := &store.RuntimeState{BotName: bot.Name, Mode: "live", Status: "running"}
-	for _, p := range []struct {
-		side string
-		px   float64
-	}{{"buy", 95}, {"sell", 105}} {
-		o, _ := b.PlaceOrder(context.Background(), exchangex.PlaceReq{Side: p.side, Price: p.px, Qty: 1, ClientOID: p.side})
-		rt.Orders = append(rt.Orders, store.RuntimeOrder{ClientOID: o.ClientOID, ExchangeID: o.ID, Side: p.side, Price: p.px, Qty: 1, Status: StatusOpen})
+	var log []string
+	save := func() error {
+		last := rt.Orders[len(rt.Orders)-1]
+		log = append(log, fmt.Sprintf("%s:%s", last.ClientOID, last.Status))
+		return nil
+	}
+	if err := PlaceGrid(context.Background(), bot, b, rt, save, b.price); err != nil {
+		t.Fatal(err)
 	}
 	b.placed = nil
-	return rt
+	return rt, save, &log
 }
 
-var gridBot = &store.Bot{Name: "g", Symbol: "S", Lower: 90, Upper: 110, Levels: 5}
-
-func TestConfirmedFillPlacesOppositeOneLevelAway(t *testing.T) {
-	b := newBook(100)
-	rt := seed(b, gridBot)
-	ex := statusBook{b}
-	if stop, err := Step(context.Background(), gridBot, ex, rt); stop || err != nil || len(b.placed) != 0 {
-		t.Fatalf("no fill yet: stop=%v err=%v placed=%v", stop, err, b.placed)
+func countStatus(rt *store.RuntimeState, st string) int {
+	n := 0
+	for _, o := range rt.Orders {
+		if o.Status == st {
+			n++
+		}
 	}
-	b.fill("xbuy")
-	if _, err := Step(context.Background(), gridBot, ex, rt); err != nil {
+	return n
+}
+
+// Finding 1: every order is saved before it is sent.
+func TestSavedBeforeSend(t *testing.T) {
+	b := newBook(100)
+	_, _, log := start(t, b, gridBot)
+	if len(*log) != 10 {
+		t.Fatalf("want 2 saves per order, got %v", *log)
+	}
+	for i := 0; i < len(*log); i += 2 {
+		if (*log)[i][len((*log)[i])-7:] != "pending" {
+			t.Fatalf("save %d before send is not pending: %v", i, *log)
+		}
+	}
+}
+
+// Finding 2: a send that timed out but reached the venue is adopted, not lost.
+func TestTimedOutSendIsReconciled(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return true, errors.New("timeout") }
+	b.fill(t, "buy", 95)
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err == nil {
+		t.Fatal("timeout not reported")
+	}
+	last := rt.Orders[len(rt.Orders)-1]
+	if last.Status != StatusPending || last.Side != "sell" || last.Price != 100 {
+		t.Fatalf("refill not kept as pending: %+v", last)
+	}
+	b.placeErr = nil
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
 		t.Fatal(err)
+	}
+	last = rt.Orders[len(rt.Orders)-1]
+	if last.Status != StatusOpen || last.ExchangeID == "" || len(b.placed) != 1 {
+		t.Fatalf("not reconciled or sent twice: %+v placed=%d", last, len(b.placed))
+	}
+}
+
+func TestSendThatNeverArrivedIsFailed(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return false, errors.New("refused") }
+	b.fill(t, "buy", 95)
+	_, _ = Step(context.Background(), gridBot, b, rt, save)
+	b.placeErr = nil
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	if countStatus(rt, StatusFailed) != 1 || countStatus(rt, StatusPending) != 0 {
+		t.Fatalf("%+v", rt.Orders)
+	}
+}
+
+func TestConfirmedFillRefillsOnce(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.fill(t, "buy", 95)
+	for i := 0; i < 2; i++ {
+		if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(b.placed) != 1 || b.placed[0].Side != "sell" || b.placed[0].Price != 100 {
 		t.Fatalf("placed %+v", b.placed)
 	}
-	if rt.Orders[0].Status != StatusFilled {
-		t.Fatalf("runtime %+v", rt.Orders[0])
+}
+
+func TestCanceledOutsideIsNotAFill(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.orders[rt.Orders[4].ClientOID].Status = StatusCanceled // by hand on the venue
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
 	}
-	// A second step must not place again for the same fill.
-	if _, err := Step(context.Background(), gridBot, ex, rt); err != nil || len(b.placed) != 1 {
-		t.Fatalf("duplicate placement: %v", b.placed)
+	if len(b.placed) != 0 || rt.Orders[4].Status != StatusCanceled {
+		t.Fatalf("placed=%v status=%s", b.placed, rt.Orders[4].Status)
 	}
 }
 
-func TestCanceledOutsideIsNotTreatedAsFill(t *testing.T) {
+// Finding 4: drivers without OrderStatus cannot run live.
+func TestNoOrderStatusRefused(t *testing.T) {
 	b := newBook(100)
-	rt := seed(b, gridBot)
-	delete(b.open, "xsell") // canceled by hand on the venue
-	if _, err := Step(context.Background(), gridBot, statusBook{b}, rt); err != nil {
-		t.Fatal(err)
+	ex := noStatus{b}
+	if !errors.Is(CanRun(ex), ErrNoOrderStatus) {
+		t.Fatal("CanRun accepted a driver without OrderStatus")
 	}
-	if len(b.placed) != 0 || rt.Orders[1].Status != StatusCanceled {
-		t.Fatalf("placed=%v status=%s", b.placed, rt.Orders[1].Status)
+	rt := &store.RuntimeState{}
+	if _, err := Step(context.Background(), gridBot, ex, rt, func() error { return nil }); !errors.Is(err, ErrNoOrderStatus) {
+		t.Fatalf("err %v", err)
 	}
 }
 
-func TestWithoutStatusDriverNothingIsPlaced(t *testing.T) {
+// Finding 4: spot has its own loss guard.
+func TestSpotLossGuard(t *testing.T) {
 	b := newBook(100)
-	rt := seed(b, gridBot)
-	b.fill("xbuy")
-	if _, err := Step(context.Background(), gridBot, b, rt); err != nil {
+	rt, save, _ := start(t, b, gridBot)
+	b.price = 86 // 90 * 0.95 = 85.5: still inside
+	if res, _ := Step(context.Background(), gridBot, b, rt, save); res.Stopped {
+		t.Fatal("fired too early")
+	}
+	b.price = 85
+	res, err := Step(context.Background(), gridBot, b, rt, save)
+	if err != nil || !res.Stopped || rt.Status != "stopped" || countStatus(rt, StatusOpen) != 0 {
+		t.Fatalf("res=%+v err=%v rt=%+v", res, err, rt.Orders)
+	}
+	if len(b.placed) != 0 {
+		t.Fatalf("spot guard must not sell: %v", b.placed)
+	}
+}
+
+func futBot() *store.Bot {
+	bot := *gridBot
+	bot.Leverage = 20
+	return &bot
+}
+
+// Finding 5: flatten closes only the bot's own net size.
+func TestFlattenClosesOwnNetOnly(t *testing.T) {
+	b := newBook(100)
+	bot := futBot()
+	rt, save, _ := start(t, b, bot)
+	b.fill(t, "buy", 95)
+	b.fill(t, "buy", 90)
+	if _, err := Step(context.Background(), bot, b, rt, save); err != nil {
 		t.Fatal(err)
 	}
-	if len(b.placed) != 0 || rt.Orders[0].Status != StatusUnknown {
-		t.Fatalf("placed=%v status=%s", b.placed, rt.Orders[0].Status)
+	b.pos = []exchangex.Position{{Symbol: "S", Side: "long", Size: 5, EntryPrice: 92}} // 3 more from a manual trade
+	b.placed = nil
+	if err := Flatten(context.Background(), bot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	c := b.placed[len(b.placed)-1]
+	if !c.ReduceOnly || c.Side != "sell" || c.Qty != 2 {
+		t.Fatalf("close %+v", c)
+	}
+	if NetSize(rt) != 0 || rt.Status != "stopped" {
+		t.Fatalf("net %g status %s", NetSize(rt), rt.Status)
+	}
+}
+
+func TestFlattenRefusesWhenVenueDoesNotCover(t *testing.T) {
+	for name, pos := range map[string][]exchangex.Position{
+		"smaller":  {{Symbol: "S", Side: "long", Size: 0.5}},
+		"opposite": {{Symbol: "S", Side: "short", Size: 3}},
+		"none":     nil,
+	} {
+		b := newBook(100)
+		bot := futBot()
+		rt, save, _ := start(t, b, bot)
+		b.fill(t, "buy", 95)
+		b.pos = pos
+		if err := Flatten(context.Background(), bot, b, rt, save); err == nil {
+			t.Errorf("%s: flatten closed anyway", name)
+		}
+		for _, p := range b.placed {
+			if p.ReduceOnly {
+				t.Errorf("%s: close order sent", name)
+			}
+		}
+	}
+}
+
+// Finding 3 and low 8: a close that does not fill is a CloseError.
+func TestPreventiveCloseNotFilledIsCloseError(t *testing.T) {
+	b := newBook(100)
+	bot := futBot()
+	rt, save, _ := start(t, b, bot)
+	b.fill(t, "buy", 95)
+	b.pos = []exchangex.Position{{Symbol: "S", Side: "long", Size: 1, EntryPrice: 95}}
+	if _, err := Step(context.Background(), bot, b, rt, save); err != nil { // records the fill
+		t.Fatal(err)
+	}
+	b.noClose = true
+	b.price = 90.4 // 20x long from 95: liq 90.25
+	_, err := Step(context.Background(), bot, b, rt, save)
+	var ce *CloseError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want CloseError, got %v", err)
 	}
 }
 
 func TestPreventiveCloseFlattens(t *testing.T) {
 	b := newBook(100)
-	bot := *gridBot
-	bot.Leverage = 20
-	rt := seed(b, &bot)
-	b.pos = []exchangex.Position{{Symbol: "S", Side: "long", Size: 2, EntryPrice: 100}}
-	if stop, _ := Step(context.Background(), &bot, statusBook{b}, rt); stop {
-		t.Fatal("fired at entry")
+	bot := futBot()
+	rt, save, _ := start(t, b, bot)
+	b.fill(t, "buy", 95)
+	b.pos = []exchangex.Position{{Symbol: "S", Side: "long", Size: 1, EntryPrice: 95}}
+	if _, err := Step(context.Background(), bot, b, rt, save); err != nil { // records the fill
+		t.Fatal(err)
 	}
-	b.price = 95.1 // 20x long from 100: liq 95; past 95% of the path
-	stop, err := Step(context.Background(), &bot, statusBook{b}, rt)
-	if err != nil || !stop || rt.Status != "stopped" || rt.Meta["preventive"] != "fired" {
-		t.Fatalf("stop=%v err=%v rt=%+v", stop, err, rt)
+	b.price = 90.4
+	res, err := Step(context.Background(), bot, b, rt, save)
+	if err != nil || !res.Stopped || rt.Status != "stopped" || NetSize(rt) != 0 {
+		t.Fatalf("res=%+v err=%v net=%g", res, err, NetSize(rt))
 	}
-	if b.cancels != 2 || len(b.placed) != 1 {
-		t.Fatalf("cancels=%d placed=%v", b.cancels, b.placed)
-	}
-	c := b.placed[0]
-	if !c.ReduceOnly || c.Side != "sell" || c.Qty != 2 || c.Price >= 95.1 {
-		t.Fatalf("close order %+v", c)
+	if c := b.placed[len(b.placed)-1]; !c.ReduceOnly || c.Price >= 90.4 {
+		t.Fatalf("close %+v", c)
 	}
 }
 
-func TestFlattenShort(t *testing.T) {
+// Low 6: partial fills count toward the net size.
+func TestPartialFillCounts(t *testing.T) {
 	b := newBook(100)
-	rt := seed(b, gridBot)
-	b.pos = []exchangex.Position{{Symbol: "S", Side: "short", Size: 3, EntryPrice: 100}, {Symbol: "OTHER", Size: 9}}
-	if err := Flatten(context.Background(), gridBot, b, rt, 100); err != nil {
+	rt, save, _ := start(t, b, gridBot)
+	b.orders[rt.Orders[1].ClientOID].Filled = 0.4 // the 95 buy, still open
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
 		t.Fatal(err)
 	}
-	if len(b.placed) != 1 || b.placed[0].Side != "buy" || !b.placed[0].ReduceOnly || b.placed[0].Price <= 100 {
-		t.Fatalf("%+v", b.placed)
+	if NetSize(rt) != 0.4 {
+		t.Fatalf("net %g", NetSize(rt))
 	}
+}
+
+// Low 7: an order with empty IDs never matches the book.
+func TestEmptyIDsDoNotMatch(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.orders["ghost"] = &exchangex.Order{Status: StatusOpen} // no IDs
+	rt.Orders = append(rt.Orders, store.RuntimeOrder{Side: "buy", Price: 50, Qty: 1, Status: StatusOpen})
+	// It must be looked up (and not found), never matched to the ghost.
+	if _, err := Step(context.Background(), gridBot, b, rt, save); !errors.Is(err, exchangex.ErrOrderNotFound) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestLock(t *testing.T) {
+	t.Setenv("CUWAN_HOME", t.TempDir())
+	l, err := TryLock("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TryLock("g"); !errors.Is(err, ErrLocked) {
+		t.Fatalf("second lock: %v", err)
+	}
+	if StopRequested("g") {
+		t.Fatal("stop before request")
+	}
+	_ = RequestStop("g")
+	if !StopRequested("g") {
+		t.Fatal("stop not seen")
+	}
+	ClearStop("g")
+	l.Unlock()
+	l2, err := TryLock("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l2.Unlock()
 }

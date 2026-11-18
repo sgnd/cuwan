@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -49,6 +50,9 @@ func runStart(args []string) int {
 	}
 	ctx := context.Background()
 	if !dry {
+		if err := live.CanRun(drv); err != nil {
+			return out.Fail("run.start", err, 1)
+		}
 		// Fail closed: a live run needs a key proven unable to withdraw.
 		perms, err := drv.Permissions(ctx)
 		if err != nil {
@@ -59,8 +63,7 @@ func runStart(args []string) int {
 		}
 	}
 	if bot.Leverage > 0 {
-		lev, _ := risk.CapLeverage(bot.Leverage)
-		bot.Leverage = lev
+		bot.Leverage, _ = risk.CapLeverage(bot.Leverage)
 	}
 	plan, err := grid.Build(bot.Lower, bot.Upper, bot.Levels)
 	if err != nil {
@@ -71,72 +74,54 @@ func runStart(args []string) int {
 		return out.Fail("run.start", err, 1)
 	}
 	if bot.Leverage > 0 {
-		entry := (bot.Lower + bot.Upper) / 2
-		d := risk.CheckFutures(entry, ticker.Price, bot.Leverage, "buy")
-		bot.Leverage = d.Leverage
+		d := risk.CheckFutures((bot.Lower+bot.Upper)/2, ticker.Price, bot.Leverage, "buy")
 		if d.Preventive {
 			return out.Fail("run.start", fmt.Errorf("%s", d.BlockReason), 1)
 		}
 	}
-	if !dry {
-		if out.Agent() && !flagBool(args, "--yes") {
-			return out.Fail("run.start", fmt.Errorf("live trading requires a person confirm; pass --yes only when a human approved"), 1)
-		}
-		if !flagBool(args, "--yes") {
-			msg := fmt.Sprintf("place %d live grid orders for %s on %s at mid≈%g?", len(plan.Prices), bot.Name, exRec.Venue, ticker.Price)
-			if !confirm(msg) {
-				return out.Fail("run.start", fmt.Errorf("aborted"), 1)
-			}
-		}
-		// Nothing touches the account before the person confirmed.
-		if bot.Leverage > 0 {
-			if err := drv.SetLeverage(ctx, bot.Symbol, bot.Leverage); err != nil {
-				return out.Fail("run.start", err, 1)
-			}
-		}
-	}
-
-	var orders []store.RuntimeOrder
-	for _, px := range plan.Prices {
-		side := grid.LevelSide(px, ticker.Price)
-		qty := bot.OrderSize
-		if qty <= 0 {
-			qty = 0.001
-		}
-		oid := grid.ClientOID(bot.Name, px, side, 1)
-		ro := store.RuntimeOrder{ClientOID: oid, Side: side, Price: px, Qty: qty, Status: "planned"}
-		if dry {
-			ro.Status = "dry-run"
-		} else {
-			ord, err := drv.PlaceOrder(ctx, exchangex.PlaceReq{
-				Symbol: bot.Symbol, Side: side, Price: px, Qty: qty, ClientOID: oid,
-			})
-			if err != nil {
-				return out.Fail("run.start", err, 1)
-			}
-			ro.ExchangeID = ord.ID
-			ro.Status = ord.Status
-			if ro.Status == "" {
-				ro.Status = "open"
-			}
-		}
-		orders = append(orders, ro)
-	}
-	rt := &store.RuntimeState{
-		BotName: bot.Name, Mode: "live", Status: "running",
-		Orders: orders, StartedAt: time.Now().UTC(),
-		Meta: map[string]string{"last_price": fmt.Sprintf("%g", ticker.Price), "dry_run": fmt.Sprintf("%v", dry)},
-	}
 	if dry {
-		rt.Status = "dry-run"
-		rt.Mode = "dry-run"
+		rt := &store.RuntimeState{BotName: bot.Name, Mode: "dry-run", Status: "dry-run", StartedAt: time.Now().UTC(),
+			Meta: map[string]string{"last_price": fmt.Sprintf("%g", ticker.Price)}}
+		for _, px := range plan.Prices {
+			side := grid.LevelSide(px, ticker.Price)
+			rt.Orders = append(rt.Orders, store.RuntimeOrder{Side: side, Price: px, Qty: bot.OrderSize, Status: "dry-run"})
+		}
+		out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("dry run %s orders=%d (nothing sent)", bot.Name, len(rt.Orders)))
+		return 0
 	}
-	if err := store.PutRuntime(rt); err != nil {
+	if out.Agent() && !flagBool(args, "--yes") {
+		return out.Fail("run.start", fmt.Errorf("live trading requires a person confirm; pass --yes only when a human approved"), 1)
+	}
+	if !flagBool(args, "--yes") {
+		msg := fmt.Sprintf("place %d live grid orders for %s on %s at mid≈%g?", len(plan.Prices), bot.Name, exRec.Venue, ticker.Price)
+		if !confirm(msg) {
+			return out.Fail("run.start", fmt.Errorf("aborted"), 1)
+		}
+	}
+	lock, err := live.TryLock(bot.Name)
+	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
-	_ = store.AppendAudit("run.start", map[string]any{"bot": bot.Name, "dry_run": dry, "orders": len(orders)})
-	out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("live start %s orders=%d dry_run=%v", bot.Name, len(orders), dry))
-	if dry || !flagBool(args, "--foreground") {
+	defer lock.Unlock()
+	live.ClearStop(bot.Name)
+	if prev, err := store.GetRuntime(bot.Name); err == nil && prev.Mode == "live" && prev.Status == "running" {
+		return out.Fail("run.start", fmt.Errorf("bot %s already has a live runtime; run `cuwan run stop %s` first", bot.Name, bot.Name), 1)
+	}
+	// Nothing touches the account before the person confirmed.
+	if bot.Leverage > 0 {
+		if err := drv.SetLeverage(ctx, bot.Symbol, bot.Leverage); err != nil {
+			return out.Fail("run.start", err, 1)
+		}
+	}
+	rt := &store.RuntimeState{BotName: bot.Name, Mode: "live", Status: "running", StartedAt: time.Now().UTC(),
+		Meta: map[string]string{"last_price": fmt.Sprintf("%g", ticker.Price)}}
+	save := func() error { return store.PutRuntime(rt) }
+	if err := live.PlaceGrid(ctx, bot, drv, rt, save, ticker.Price); err != nil {
+		return halt(ctx, bot, drv, rt, save, "initial grid failed: "+err.Error())
+	}
+	_ = store.AppendAudit("run.start", map[string]any{"bot": bot.Name, "orders": len(rt.Orders)})
+	out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("live start %s orders=%d", bot.Name, len(rt.Orders)))
+	if !flagBool(args, "--foreground") {
 		return 0
 	}
 	return runLoop(bot, drv, rt)
@@ -145,8 +130,12 @@ func runStart(args []string) int {
 // runEvery is the live loop interval; tests shorten it.
 var runEvery = 5 * time.Second
 
-// runLoop steps the live engine until the bot stops, a signal arrives, or
-// `run stop` marks the stored runtime stopped.
+// maxStepErrors is how many failed steps in a row halt the bot.
+const maxStepErrors = 6
+
+// runLoop steps the live engine while this process holds the bot's lock.
+// It ends on a signal, a stop request from `run stop`, a guard, or too many
+// errors in a row.
 func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -154,37 +143,62 @@ func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int
 	tick := time.NewTicker(runEvery)
 	defer tick.Stop()
 	ctx := context.Background()
+	save := func() error { return store.PutRuntime(rt) }
+	fails := 0
 	for {
 		select {
 		case <-sig:
-			rt.Status = "stopped"
-			_ = store.PutRuntime(rt)
 			_ = store.AppendAudit("run.signal", map[string]any{"bot": bot.Name})
-			return 0
+			return 0 // orders stay on the book; `run stop` cancels them
 		case <-tick.C:
 		}
-		if cur, err := store.GetRuntime(bot.Name); err == nil && cur.Status == "stopped" {
-			return 0
+		if live.StopRequested(bot.Name) {
+			return 0 // release the lock; `run stop` takes over
 		}
-		stopped, err := live.Step(ctx, bot, drv, rt)
+		res, err := live.Step(ctx, bot, drv, rt, save)
+		var ce *live.CloseError
+		if errors.As(err, &ce) {
+			return halt(ctx, bot, drv, rt, save, ce.Error())
+		}
 		if err != nil {
-			// A failed step changes nothing on the venue; log and retry.
-			_ = store.AppendAudit("run.step_error", map[string]any{"bot": bot.Name, "error": err.Error()})
+			fails++
+			_ = store.AppendAudit("run.step_error", map[string]any{"bot": bot.Name, "error": err.Error(), "in_a_row": fails})
+			if fails >= maxStepErrors {
+				return halt(ctx, bot, drv, rt, save, fmt.Sprintf("%d failed steps in a row, last: %v", fails, err))
+			}
 			continue
 		}
-		// `run stop` may have marked the bot stopped during the step; never
-		// overwrite that with "running".
-		if cur, err := store.GetRuntime(bot.Name); err == nil && cur.Status == "stopped" && !stopped {
-			return 0
-		}
-		if err := store.PutRuntime(rt); err != nil {
-			return out.Fail("run.loop", err, 1)
-		}
-		if stopped {
-			_ = store.AppendAudit("run.preventive_close", map[string]any{"bot": bot.Name})
+		fails = 0
+		if res.Stopped {
+			_ = store.AppendAudit("run.guard", map[string]any{"bot": bot.Name, "reason": res.Reason})
+			alert(bot.Name, res.Reason)
 			return 0
 		}
 	}
+}
+
+// halt cancels what it can, marks the bot halted, and alerts a person.
+func halt(ctx context.Context, bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState, save live.Saver, reason string) int {
+	for i := range rt.Orders {
+		o := &rt.Orders[i]
+		if o.Status == live.StatusOpen && drv.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID) == nil {
+			o.Status = live.StatusCanceled
+		}
+	}
+	rt.Status = "halted"
+	if rt.Meta == nil {
+		rt.Meta = map[string]string{}
+	}
+	rt.Meta["halt_reason"] = reason
+	_ = save()
+	_ = store.AppendAudit("run.halt", map[string]any{"bot": bot.Name, "reason": reason})
+	alert(bot.Name, "HALTED: "+reason+"; check open orders and positions on the venue")
+	return out.Fail("run.loop", fmt.Errorf("bot %s halted: %s", bot.Name, reason), 1)
+}
+
+// alert tells a person. Local notifications are planned (M6).
+func alert(bot, msg string) {
+	fmt.Fprintf(os.Stderr, "cuwan ALERT [%s]: %s\n", bot, msg)
 }
 
 func runStatus(args []string) int {
@@ -200,6 +214,9 @@ func runStatus(args []string) int {
 	return 0
 }
 
+// stopWait is how long `run stop` waits for a running loop to let go.
+var stopWait = 60 * time.Second
+
 func runStop(args []string) int {
 	pos := positional(args)
 	if len(pos) < 1 {
@@ -213,48 +230,76 @@ func runStop(args []string) int {
 			return out.Fail("run.stop", fmt.Errorf("aborted"), 1)
 		}
 	}
-	rt, err := store.GetRuntime(pos[0])
-	if err != nil {
-		return out.Fail("run.stop", err, 1)
-	}
 	bot, err := store.GetBot(pos[0])
 	if err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
-	if rt.Mode == "live" && rt.Status == "running" {
+	lock, err := takeOver(bot.Name)
+	if err != nil {
+		return out.Fail("run.stop", err, 1)
+	}
+	defer lock.Unlock()
+	defer live.ClearStop(bot.Name)
+	// Read the runtime only now: the loop saved every order before it let go.
+	rt, err := store.GetRuntime(bot.Name)
+	if err != nil {
+		return out.Fail("run.stop", err, 1)
+	}
+	if rt.Mode == "live" && (rt.Status == "running" || rt.Status == "halted") {
 		_, drv, err := openExchange(bot.Exchange, false)
-		if err == nil {
-			ctx := context.Background()
+		if err != nil {
+			return out.Fail("run.stop", err, 1)
+		}
+		ctx := context.Background()
+		save := func() error { return store.PutRuntime(rt) }
+		if flagBool(args, "--flatten") {
+			if err := live.Flatten(ctx, bot, drv, rt, save); err != nil {
+				alert(bot.Name, "flatten failed: "+err.Error())
+				return out.Fail("run.stop", fmt.Errorf("flatten: %w (bot left as is; retry or close by hand)", err), 1)
+			}
+			_ = store.AppendAudit("run.flatten", map[string]any{"bot": bot.Name})
+		} else {
+			if err := live.Reconcile(ctx, bot, drv, rt, save); err != nil {
+				return out.Fail("run.stop", err, 1)
+			}
 			for i := range rt.Orders {
 				o := &rt.Orders[i]
-				if o.Status != "open" && o.Status != "new" {
+				if o.Status != live.StatusOpen {
 					continue
 				}
 				if err := drv.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID); err != nil {
-					_ = store.PutRuntime(rt)
+					_ = save()
 					return out.Fail("run.stop", fmt.Errorf("cancel %s: %w (bot left running; retry)", o.ClientOID, err), 1)
 				}
 				o.Status = live.StatusCanceled
 			}
-			if flagBool(args, "--flatten") {
-				t, err := drv.Ticker(ctx, bot.Symbol)
-				if err != nil {
-					return out.Fail("run.stop", err, 1)
-				}
-				if err := live.Flatten(ctx, bot, drv, rt, t.Price); err != nil {
-					return out.Fail("run.stop", err, 1)
-				}
-				_ = store.AppendAudit("run.flatten", map[string]any{"bot": pos[0]})
-			}
-		} else {
-			return out.Fail("run.stop", err, 1)
 		}
 	}
 	rt.Status = "stopped"
 	if err := store.PutRuntime(rt); err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
-	_ = store.AppendAudit("run.stop", map[string]any{"bot": pos[0]})
-	out.Print(os.Stdout, "run.stop", map[string]string{"name": pos[0]}, "stopped "+pos[0])
+	_ = store.AppendAudit("run.stop", map[string]any{"bot": bot.Name})
+	out.Print(os.Stdout, "run.stop", map[string]string{"name": bot.Name}, "stopped "+bot.Name)
 	return 0
+}
+
+// takeOver gets the bot's lock, asking a running loop to stop first.
+func takeOver(bot string) (*live.Lock, error) {
+	lock, err := live.TryLock(bot)
+	if !errors.Is(err, live.ErrLocked) {
+		return lock, err
+	}
+	if err := live.RequestStop(bot); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(stopWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		lock, err = live.TryLock(bot)
+		if !errors.Is(err, live.ErrLocked) {
+			return lock, err
+		}
+	}
+	return nil, fmt.Errorf("the running loop did not stop within %s; nothing was cancelled", stopWait)
 }

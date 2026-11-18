@@ -72,7 +72,14 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | `run stop --flatten`: real reduce-only close (today it only cancels) | done |
 | `run stop` fails and leaves the bot running if a cancel fails (was ignored) | done |
 | Loop never overwrites a `stopped` written by `run stop` | done (small window remains: needs a store compare-and-set) |
-| Store compare-and-set for runtime writes | open |
+| Store compare-and-set for runtime writes | done another way: one OS lock per bot; `run stop` asks the loop to stop and waits for the lock |
+| Review of PR #6, 1 (high): `run stop` raced the loop; orders placed after the last save were lost | done: per-bot lock, save before and after every order |
+| Review of PR #6, 2 (high): order marked filled before the opposite order was sent; a timed-out send was untracked | done: saved as `pending` first, reconciled by client order ID |
+| Review of PR #6, 3 (medium): step errors retried forever | done: 6 failed steps in a row halt the bot and cancel its orders; a failed protective close halts at once and alerts |
+| Review of PR #6, 4 (medium): no driver could confirm fills; spot had no loss guard | done: live start refuses drivers without `OrderStatus`; spot stops (cancels, does not sell) 5% below the grid |
+| Review of PR #6, 5 (medium): flatten closed the whole symbol position | done: closes the bot's own net size; refuses when the venue position does not cover it |
+| Review of PR #6, low: partial fills, empty IDs, close price and close check | done: partial fills count; empty IDs never match; fresh price for the close; close must be filled |
+| Local alerts beyond stderr for halts and guards | open: see M6 alerts |
 | Detached live worker (like paper), so the loop survives the terminal | open |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |
 | Tests for the loop against the fake driver | done |
@@ -95,6 +102,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Release workflow (GoReleaser, checksums), like komando | open |
 | README and `docs/` updated for every command | open |
 | `make security` (govulncheck) in CI | open |
+| Go toolchain bump in `go.mod` once a release fixes GO-2026-6859 (`net/http`) | open |
 
 ## M6: Killer features and trust
 

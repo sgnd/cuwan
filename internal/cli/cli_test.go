@@ -12,21 +12,36 @@ import (
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
+	"github.com/sgnd/cuwan/internal/live"
 	"github.com/sgnd/cuwan/internal/out"
 	"github.com/sgnd/cuwan/internal/store"
 )
 
 // fakeEx records every call so tests can prove nothing touched the account.
 type fakeEx struct {
-	perms    exchangex.Permissions
-	permsErr error
-	calls    []string
+	perms     exchangex.Permissions
+	permsErr  error
+	tickerErr error
+	calls     []string
+	placed    map[string]exchangex.Order
 }
+
+func (f *fakeEx) OrderStatus(_ context.Context, _, id, cid string) (exchangex.Order, error) {
+	for _, o := range f.placed {
+		if o.ClientOID == cid || (id != "" && o.ID == id) {
+			return o, nil
+		}
+	}
+	return exchangex.Order{}, exchangex.ErrOrderNotFound
+}
+
+// bare hides OrderStatus.
+type bare struct{ exchangex.Exchange }
 
 func (f *fakeEx) Name() string   { return "fake" }
 func (f *fakeEx) Market() string { return "usdm" }
 func (f *fakeEx) Ticker(context.Context, string) (exchangex.Ticker, error) {
-	return exchangex.Ticker{Price: 100}, nil
+	return exchangex.Ticker{Price: 100}, f.tickerErr
 }
 func (f *fakeEx) Balances(context.Context) ([]exchangex.Balance, error)   { return nil, nil }
 func (f *fakeEx) Positions(context.Context) ([]exchangex.Position, error) { return nil, nil }
@@ -35,10 +50,19 @@ func (f *fakeEx) OpenOrders(context.Context, string) ([]exchangex.Order, error) 
 }
 func (f *fakeEx) PlaceOrder(_ context.Context, r exchangex.PlaceReq) (exchangex.Order, error) {
 	f.calls = append(f.calls, "place")
-	return exchangex.Order{ID: r.ClientOID, Status: "open"}, nil
+	if f.placed == nil {
+		f.placed = map[string]exchangex.Order{}
+	}
+	o := exchangex.Order{ID: r.ClientOID, ClientOID: r.ClientOID, Side: r.Side, Price: r.Price, Qty: r.Qty, Status: "open"}
+	f.placed[r.ClientOID] = o
+	return o, nil
 }
-func (f *fakeEx) CancelOrder(context.Context, string, string, string) error {
+func (f *fakeEx) CancelOrder(_ context.Context, _, _, cid string) error {
 	f.calls = append(f.calls, "cancel")
+	if o, ok := f.placed[cid]; ok {
+		o.Status = "canceled"
+		f.placed[cid] = o
+	}
 	return nil
 }
 func (f *fakeEx) SetLeverage(context.Context, string, float64) error {
@@ -209,21 +233,86 @@ func TestRunStopFlattenClosesPosition(t *testing.T) {
 	}
 }
 
-func TestRunLoopEndsOnExternalStop(t *testing.T) {
+func TestRunLoopEndsOnStopRequest(t *testing.T) {
 	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
 	setup(t, fx)
 	runEvery = time.Millisecond
 	t.Cleanup(func() { runEvery = 5 * time.Second })
 	bot, _ := store.GetBot("g")
-	// `run stop` already wrote "stopped"; the loop holds a stale "running".
-	if err := store.PutRuntime(&store.RuntimeState{BotName: "g", Mode: "live", Status: "stopped"}); err != nil {
+	if err := live.RequestStop("g"); err != nil {
 		t.Fatal(err)
 	}
 	rt := &store.RuntimeState{BotName: "g", Mode: "live", Status: "running"}
 	if code := runLoop(bot, fx, rt); code != 0 {
 		t.Fatalf("code %d", code)
 	}
-	if cur, _ := store.GetRuntime("g"); cur.Status != "stopped" {
-		t.Fatalf("loop overwrote stop: %s", cur.Status)
+}
+
+// Review finding 3: failed steps in a row halt the bot and cancel orders.
+func TestRunLoopHaltsAfterErrorsInARow(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	runEvery = time.Millisecond
+	t.Cleanup(func() { runEvery = 5 * time.Second })
+	if code, env := call(t, "run", "start", "g", "--yes"); code != 0 {
+		t.Fatalf("%+v", env)
+	}
+	bot, _ := store.GetBot("g")
+	rt, _ := store.GetRuntime("g")
+	fx.tickerErr = errors.New("venue down")
+	fx.calls = nil
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+	code := runLoop(bot, fx, rt)
+	w.Close()
+	os.Stdout = old
+	_, _ = io.ReadAll(r)
+	if code == 0 {
+		t.Fatal("loop kept going")
+	}
+	got, _ := store.GetRuntime("g")
+	if got.Status != "halted" || len(fx.calls) != 4 {
+		t.Fatalf("status %s calls %v", got.Status, fx.calls)
+	}
+}
+
+// Review finding 4: live start refuses a driver that cannot confirm fills.
+func TestRunStartRefusesDriverWithoutOrderStatus(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	openExchange = func(name string, _ bool) (*store.Exchange, exchangex.Exchange, error) {
+		e, err := store.GetExchange(name)
+		return e, bare{fx}, err
+	}
+	code, env := call(t, "run", "start", "g", "--yes")
+	if code == 0 || !strings.Contains(env.Error, "OrderStatus") || len(fx.calls) != 0 {
+		t.Fatalf("%d %+v %v", code, env, fx.calls)
+	}
+}
+
+// Review finding 1: run stop waits for a running loop to let go.
+func TestRunStopTakesOverFromLoop(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	if code, env := call(t, "run", "start", "g", "--yes"); code != 0 {
+		t.Fatalf("%+v", env)
+	}
+	held, err := live.TryLock("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopWait = 300 * time.Millisecond
+	t.Cleanup(func() { stopWait = 60 * time.Second })
+	code, env := call(t, "run", "stop", "g", "--yes")
+	if code == 0 || !strings.Contains(env.Error, "did not stop") || !live.StopRequested("g") {
+		t.Fatalf("stop ran under a held lock: %d %+v", code, env)
+	}
+	held.Unlock()
+	if code, env := call(t, "run", "stop", "g", "--yes"); code != 0 {
+		t.Fatalf("%+v", env)
+	}
+	if live.StopRequested("g") {
+		t.Fatal("stop request left behind")
 	}
 }

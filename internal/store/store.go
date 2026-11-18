@@ -278,6 +278,8 @@ type RuntimeOrder struct {
 	Side       string  `json:"side"`
 	Price      float64 `json:"price"`
 	Qty        float64 `json:"qty"`
+	Filled     float64 `json:"filled,omitempty"`
+	ReduceOnly bool    `json:"reduce_only,omitempty"`
 	Status     string  `json:"status"`
 }
 

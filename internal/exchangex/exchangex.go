@@ -3,6 +3,7 @@ package exchangex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -34,6 +35,10 @@ const (
 	BackendPublic   = "public"
 	BackendRegistry = "registry"
 )
+
+// ErrOrderNotFound is returned by OrderStatus when the venue has no order
+// with that ID. Drivers wrap it so callers can use errors.Is.
+var ErrOrderNotFound = errors.New("order not found")
 
 // Exchange is a trading venue driver.
 type Exchange interface {
