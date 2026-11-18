@@ -16,6 +16,11 @@ import (
 
 func init() {
 	exchangex.Register("hyperliquid", Open)
+	exchangex.RegisterMeta(exchangex.VenueInfo{
+		ID: "hyperliquid", Kind: exchangex.KindDEX,
+		Markets: []string{exchangex.MarketPerp},
+		Backend: exchangex.BackendNative, PublicTicker: true, Live: "paper-only",
+	}, Open)
 }
 
 const mainnetInfo = "https://api.hyperliquid.xyz/info"

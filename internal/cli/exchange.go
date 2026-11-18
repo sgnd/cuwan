@@ -14,7 +14,7 @@ import (
 
 func cmdExchange(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stdout, "usage: cuwan exchange add|list|test …")
+		fmt.Fprintln(os.Stdout, "usage: cuwan exchange add|list|venues|test …")
 		return 0
 	}
 	switch args[0] {
@@ -22,6 +22,8 @@ func cmdExchange(args []string) int {
 		return exchangeAdd(args[1:])
 	case "list":
 		return exchangeList(args[1:])
+	case "venues":
+		return exchangeVenues(args[1:])
 	case "test":
 		return exchangeTest(args[1:])
 	default:
@@ -32,23 +34,20 @@ func cmdExchange(args []string) int {
 func exchangeAdd(args []string) int {
 	pos := positional(args)
 	if len(pos) < 1 {
-		return out.Fail("exchange.add", fmt.Errorf("usage: cuwan exchange add NAME --venue binance|hyperliquid --secret secret:NAME [--market spot|usdm|perp]"), 2)
-	}
-	venue, _ := flagValue(args, "--venue")
-	if venue == "" {
-		venue = pos[0] // allow: exchange add binance --secret …
-		if len(pos) > 1 {
-			// NAME was first
-		}
+		return out.Fail("exchange.add", fmt.Errorf("usage: cuwan exchange add NAME --venue ID --secret secret:NAME [--market spot|usdm|perp]"), 2)
 	}
 	name := pos[0]
-	if v, ok := flagValue(args, "--venue"); ok {
-		venue = v
-	} else if name == "binance" || name == "hyperliquid" {
-		venue = name
+	venue, _ := flagValue(args, "--venue")
+	if venue == "" {
+		if exchangex.Has(name) {
+			venue = name
+		}
 	}
 	if venue == "" {
-		return out.Fail("exchange.add", fmt.Errorf("missing --venue"), 2)
+		return out.Fail("exchange.add", fmt.Errorf("missing --venue (see: cuwan exchange venues)"), 2)
+	}
+	if !exchangex.Has(venue) {
+		return out.Fail("exchange.add", fmt.Errorf("unknown venue %q (see: cuwan exchange venues)", venue), 2)
 	}
 	secret, _ := flagValue(args, "--secret")
 	if secret == "" {
@@ -59,8 +58,8 @@ func exchangeAdd(args []string) int {
 	}
 	market, _ := flagValue(args, "--market")
 	if market == "" {
-		if venue == "hyperliquid" {
-			market = exchangex.MarketPerp
+		if info, ok := exchangex.Lookup(venue); ok && len(info.Markets) > 0 {
+			market = info.Markets[0]
 		} else {
 			market = exchangex.MarketSpot
 		}
@@ -112,6 +111,32 @@ func exchangeList(args []string) int {
 	return 0
 }
 
+func exchangeVenues(args []string) int {
+	list := exchangex.Venues()
+	type row struct {
+		ID           string   `json:"id"`
+		Kind         string   `json:"kind"`
+		Markets      []string `json:"markets"`
+		Backend      string   `json:"backend"`
+		PublicTicker bool     `json:"public_ticker"`
+		Live         string   `json:"live"`
+	}
+	rows := make([]row, 0, len(list))
+	var lines []string
+	for _, v := range list {
+		rows = append(rows, row{
+			ID: v.ID, Kind: v.Kind, Markets: v.Markets,
+			Backend: v.Backend, PublicTicker: v.PublicTicker, Live: v.Live,
+		})
+		lines = append(lines, fmt.Sprintf("%-22s  %-3s  %-16s  %-10s  ticker=%v  live=%s",
+			v.ID, v.Kind, strings.Join(v.Markets, ","), v.Backend, v.PublicTicker, v.Live))
+	}
+	payload := map[string]any{"count": len(rows), "venues": rows}
+	text := fmt.Sprintf("%d venues\n%s", len(rows), strings.Join(lines, "\n"))
+	out.Print(os.Stdout, "exchange.venues", payload, text)
+	return 0
+}
+
 func exchangeTest(args []string) int {
 	pos := positional(args)
 	if len(pos) < 1 {
@@ -124,6 +149,9 @@ func exchangeTest(args []string) int {
 	_ = ex
 	ctx := context.Background()
 	symbol := "BTCUSDT"
+	if info, ok := exchangex.Lookup(drv.Name()); ok && info.Kind == exchangex.KindDEX && len(info.Markets) == 1 && info.Markets[0] == exchangex.MarketPerp {
+		symbol = "BTC"
+	}
 	if drv.Name() == "hyperliquid" {
 		symbol = "BTC"
 	}
@@ -157,7 +185,7 @@ func openNamedExchange(name string, paperOK bool) (*store.Exchange, exchangex.Ex
 		if err != nil {
 			return nil, nil, err
 		}
-		// Binance secrets stored as "KEY:SECRET" or JSON; Hyperliquid as "address:key" or key only.
+		// Secrets stay sealed refs in store; values resolve only for live drivers.
 		cfg.APIKey, cfg.APISecret = splitCred(secret, e.Venue)
 	}
 	drv, err := exchangex.Open(cfg)

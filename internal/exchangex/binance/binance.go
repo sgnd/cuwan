@@ -20,6 +20,11 @@ import (
 
 func init() {
 	exchangex.Register("binance", Open)
+	exchangex.RegisterMeta(exchangex.VenueInfo{
+		ID: "binance", Kind: exchangex.KindCEX,
+		Markets: []string{exchangex.MarketSpot, exchangex.MarketUSDM},
+		Backend: exchangex.BackendNative, PublicTicker: true, Live: "full",
+	}, Open)
 }
 
 // Open builds a Binance driver.

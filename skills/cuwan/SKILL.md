@@ -1,6 +1,6 @@
 ---
 name: cuwan
-description: Local-first CEX/DEX grid trading CLI. Use when running or configuring cuwan bots, secrets, Binance, or Hyperliquid from an agent.
+description: Local-first CEX/DEX grid trading CLI (100+ venues). Use when running or configuring cuwan bots, secrets, or exchanges from an agent.
 ---
 
 # cuwan
@@ -12,6 +12,7 @@ export CUWAN_AGENT=1
 cuwan doctor
 cuwan guide
 cuwan schema
+cuwan exchange venues
 ```
 
 ## Secrets
@@ -24,6 +25,7 @@ printf '%s' "$API_KEY:$API_SECRET" | cuwan secret set binance-main
 ## Exchange + bot + paper
 
 ```bash
+cuwan exchange venues                   # 100+ registered venue ids
 cuwan exchange add binance --venue binance --secret secret:binance-main --market spot
 cuwan bot add btc-grid --exchange binance --symbol BTCUSDT --lower 90000 --upper 110000 --levels 11 --order-size 0.001
 cuwan paper start btc-grid          # detaches a worker; sealed runtime under ~/.cuwan
@@ -46,3 +48,4 @@ cuwan run stop btc-grid --yes
 
 - Max leverage: 20x (clamped; no disable)
 - Preventive reduce-only close: ~5% of path to estimated liquidation
+- Secrets never appear as raw values in agent JSON (`[hidden]` / `[secret:NAME]`)
