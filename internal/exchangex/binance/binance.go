@@ -369,6 +369,9 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 				TickSize string `json:"tickSize"`
 				StepSize string `json:"stepSize"`
 				MinQty   string `json:"minQty"`
+				// spot NOTIONAL and MIN_NOTIONAL use minNotional; USD-M MIN_NOTIONAL uses notional
+				MinNotional string `json:"minNotional"`
+				Notional    string `json:"notional"`
 			} `json:"filters"`
 		} `json:"symbols"`
 	}
@@ -387,6 +390,12 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 			case "LOT_SIZE":
 				r.Step, _ = strconv.ParseFloat(f.StepSize, 64)
 				r.MinQty, _ = strconv.ParseFloat(f.MinQty, 64)
+			case "NOTIONAL", "MIN_NOTIONAL":
+				v := f.MinNotional
+				if v == "" {
+					v = f.Notional
+				}
+				r.MinNotional, _ = strconv.ParseFloat(v, 64)
 			}
 		}
 		if r.Tick <= 0 || r.Step <= 0 {

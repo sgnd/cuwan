@@ -90,7 +90,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Binance: tick and step from exchangeInfo, IOC closes, -2011 on cancel as not found | done |
 | Review 3 (medium): client order IDs repeated across runs | done: a random run ID is part of every live client order ID |
 | Review 3 low: unknown orders skipped by CancelAll; SIGHUP not caught; lost counter orders | done: unknown is cancelled; SIGHUP marks the bot unguarded; every filled grid order gets one counter order, retried if it failed |
-| Review 3 low: minimum order value (notional) not in the size rules | open: on the Binance branch |
+| Review 3 low: minimum order value (notional) not in the size rules | done: Binance NOTIONAL and MIN_NOTIONAL |
 | Detached live worker (like paper), so the loop survives the terminal | open: until then live start needs `--foreground` |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |
 | Tests for the loop against the fake driver | done |

@@ -134,13 +134,14 @@ func TestRulesFromExchangeInfo(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"symbols":[{"symbol":"ETHUSDT","filters":[]},{"symbol":"BTCUSDT","filters":[
 			{"filterType":"PRICE_FILTER","tickSize":"0.10"},
-			{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}`))
+			{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"},
+			{"filterType":"MIN_NOTIONAL","notional":"100"}]}]}`))
 	}))
 	t.Cleanup(srv.Close)
 	d := drv(srv, exchangex.MarketUSDM, true)
 	for i := 0; i < 2; i++ {
 		r, err := d.Rules(context.Background(), "BTCUSDT")
-		if err != nil || r.Tick != 0.1 || r.Step != 0.001 || r.MinQty != 0.001 {
+		if err != nil || r.Tick != 0.1 || r.Step != 0.001 || r.MinQty != 0.001 || r.MinNotional != 100 {
 			t.Fatalf("%+v %v", r, err)
 		}
 	}

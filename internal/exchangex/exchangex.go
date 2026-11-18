@@ -46,6 +46,8 @@ type SymbolRules struct {
 	Tick   float64
 	Step   float64
 	MinQty float64
+	// MinNotional is the smallest price * size the venue accepts.
+	MinNotional float64
 }
 
 // RulesProvider is an optional driver interface that reports SymbolRules.
