@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/out"
@@ -180,5 +181,49 @@ func TestPositional(t *testing.T) {
 	got := positional([]string{"a", "--x", "1", "--y=2", "b", "--yes"})
 	if strings.Join(got, ",") != "a,b" {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestRunStopFlattenClosesPosition(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	if code, env := call(t, "run", "start", "g", "--yes"); code != 0 {
+		t.Fatalf("%+v", env)
+	}
+	fx.calls = nil
+	if code, env := call(t, "run", "stop", "g", "--yes", "--flatten"); code != 0 {
+		t.Fatalf("%+v", env)
+	}
+	cancels := 0
+	for _, c := range fx.calls {
+		if c == "cancel" {
+			cancels++
+		}
+	}
+	if cancels != 4 {
+		t.Fatalf("each order cancelled once, got %v", fx.calls)
+	}
+	rt, _ := store.GetRuntime("g")
+	if rt.Status != "stopped" {
+		t.Fatalf("status %s", rt.Status)
+	}
+}
+
+func TestRunLoopEndsOnExternalStop(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	runEvery = time.Millisecond
+	t.Cleanup(func() { runEvery = 5 * time.Second })
+	bot, _ := store.GetBot("g")
+	// `run stop` already wrote "stopped"; the loop holds a stale "running".
+	if err := store.PutRuntime(&store.RuntimeState{BotName: "g", Mode: "live", Status: "stopped"}); err != nil {
+		t.Fatal(err)
+	}
+	rt := &store.RuntimeState{BotName: "g", Mode: "live", Status: "running"}
+	if code := runLoop(bot, fx, rt); code != 0 {
+		t.Fatalf("code %d", code)
+	}
+	if cur, _ := store.GetRuntime("g"); cur.Status != "stopped" {
+		t.Fatalf("loop overwrote stop: %s", cur.Status)
 	}
 }

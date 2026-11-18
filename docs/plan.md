@@ -62,21 +62,27 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 
 ## M3: Live engine loop
 
-`run start` today places the grid once and exits. Nothing watches fills.
+`run start` placed the grid once and exited. Nothing watched fills.
 
 | Item | Status |
 |---|---|
-| Worker that refills the opposite side when a grid order fills | open |
-| ~5% preventive reduce-only close enforced while running (cannot be disabled) | open |
-| `run stop --flatten`: real reduce-only close (today it only cancels) | open |
+| Worker that refills the opposite side when a grid order fills | done: `internal/live` Step, one grid level away; `run start --foreground` loop |
+| Fills count only on driver proof (`OrderStatus`); else marked `unknown`, nothing placed | done |
+| ~5% preventive reduce-only close enforced while running (cannot be disabled) | done: from the venue position, each step |
+| `run stop --flatten`: real reduce-only close (today it only cancels) | done |
+| `run stop` fails and leaves the bot running if a cancel fails (was ignored) | done |
+| Loop never overwrites a `stopped` written by `run stop` | done (small window remains: needs a store compare-and-set) |
+| Store compare-and-set for runtime writes | open |
+| Detached live worker (like paper), so the loop survives the terminal | open |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |
-| Tests for the loop against the fake driver | open |
+| Tests for the loop against the fake driver | done |
 
 ## M4: Venue drivers on testnets
 
 | Item | Status |
 |---|---|
 | Binance spot and USD-M testnet: signed orders, permission probe | open |
+| `OrderStatus` in native drivers (without it the live loop never refills) | open |
 | Hyperliquid testnet: L1 signing (today returns an error) | open |
 | Opt-in integration tests behind an env flag, testnet keys only | open |
 | Catalog venues stay `paper-only` or `stub` until a native driver lands | deferred: waits on M4 drivers above |

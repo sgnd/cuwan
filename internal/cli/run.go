@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/grid"
+	"github.com/sgnd/cuwan/internal/live"
 	"github.com/sgnd/cuwan/internal/out"
 	"github.com/sgnd/cuwan/internal/risk"
 	"github.com/sgnd/cuwan/internal/store"
@@ -33,7 +36,7 @@ func cmdRun(args []string) int {
 func runStart(args []string) int {
 	pos := positional(args)
 	if len(pos) < 1 {
-		return out.Fail("run.start", fmt.Errorf("usage: cuwan run start NAME [--yes] [--dry-run]"), 2)
+		return out.Fail("run.start", fmt.Errorf("usage: cuwan run start NAME [--yes] [--dry-run] [--foreground]"), 2)
 	}
 	dry := flagBool(args, "--dry-run")
 	bot, err := store.GetBot(pos[0])
@@ -133,7 +136,55 @@ func runStart(args []string) int {
 	}
 	_ = store.AppendAudit("run.start", map[string]any{"bot": bot.Name, "dry_run": dry, "orders": len(orders)})
 	out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("live start %s orders=%d dry_run=%v", bot.Name, len(orders), dry))
-	return 0
+	if dry || !flagBool(args, "--foreground") {
+		return 0
+	}
+	return runLoop(bot, drv, rt)
+}
+
+// runEvery is the live loop interval; tests shorten it.
+var runEvery = 5 * time.Second
+
+// runLoop steps the live engine until the bot stops, a signal arrives, or
+// `run stop` marks the stored runtime stopped.
+func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	tick := time.NewTicker(runEvery)
+	defer tick.Stop()
+	ctx := context.Background()
+	for {
+		select {
+		case <-sig:
+			rt.Status = "stopped"
+			_ = store.PutRuntime(rt)
+			_ = store.AppendAudit("run.signal", map[string]any{"bot": bot.Name})
+			return 0
+		case <-tick.C:
+		}
+		if cur, err := store.GetRuntime(bot.Name); err == nil && cur.Status == "stopped" {
+			return 0
+		}
+		stopped, err := live.Step(ctx, bot, drv, rt)
+		if err != nil {
+			// A failed step changes nothing on the venue; log and retry.
+			_ = store.AppendAudit("run.step_error", map[string]any{"bot": bot.Name, "error": err.Error()})
+			continue
+		}
+		// `run stop` may have marked the bot stopped during the step; never
+		// overwrite that with "running".
+		if cur, err := store.GetRuntime(bot.Name); err == nil && cur.Status == "stopped" && !stopped {
+			return 0
+		}
+		if err := store.PutRuntime(rt); err != nil {
+			return out.Fail("run.loop", err, 1)
+		}
+		if stopped {
+			_ = store.AppendAudit("run.preventive_close", map[string]any{"bot": bot.Name})
+			return 0
+		}
+	}
 }
 
 func runStatus(args []string) int {
@@ -174,15 +225,29 @@ func runStop(args []string) int {
 		_, drv, err := openExchange(bot.Exchange, false)
 		if err == nil {
 			ctx := context.Background()
-			for _, o := range rt.Orders {
-				if o.Status == "open" || o.Status == "new" {
-					_ = drv.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
+			for i := range rt.Orders {
+				o := &rt.Orders[i]
+				if o.Status != "open" && o.Status != "new" {
+					continue
 				}
+				if err := drv.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID); err != nil {
+					_ = store.PutRuntime(rt)
+					return out.Fail("run.stop", fmt.Errorf("cancel %s: %w (bot left running; retry)", o.ClientOID, err), 1)
+				}
+				o.Status = live.StatusCanceled
 			}
 			if flagBool(args, "--flatten") {
-				// reduce-only market-like close via aggressive limit at mark — MVP cancels only
+				t, err := drv.Ticker(ctx, bot.Symbol)
+				if err != nil {
+					return out.Fail("run.stop", err, 1)
+				}
+				if err := live.Flatten(ctx, bot, drv, rt, t.Price); err != nil {
+					return out.Fail("run.stop", err, 1)
+				}
 				_ = store.AppendAudit("run.flatten", map[string]any{"bot": pos[0]})
 			}
+		} else {
+			return out.Fail("run.stop", err, 1)
 		}
 	}
 	rt.Status = "stopped"
