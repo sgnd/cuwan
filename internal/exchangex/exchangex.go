@@ -48,6 +48,10 @@ type SymbolRules struct {
 	MinQty float64
 	// MinNotional is the smallest price * size the venue accepts.
 	MinNotional float64
+	// SigFigs, when set, limits prices to that many significant figures,
+	// so the tick depends on the price (Hyperliquid). Tick is then the
+	// smallest tick allowed by the decimals limit.
+	SigFigs int
 }
 
 // RulesProvider is an optional driver interface that reports SymbolRules.

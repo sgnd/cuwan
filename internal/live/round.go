@@ -37,7 +37,7 @@ func roundReq(req exchangex.PlaceReq, r exchangex.SymbolRules, crossing bool) (e
 	if crossing {
 		up = !up
 	}
-	req.Price = toGrid(req.Price, r.Tick, up)
+	req.Price = toGrid(req.Price, PriceTick(req.Price, r), up)
 	req.Qty = toGrid(req.Qty, r.Step, false)
 	if req.Qty <= 0 || req.Qty+1e-12 < r.MinQty {
 		return req, fmt.Errorf("live: size %g is below the venue minimum %g for %s", req.Qty, r.MinQty, req.Symbol)
@@ -46,4 +46,16 @@ func roundReq(req exchangex.PlaceReq, r exchangex.SymbolRules, crossing bool) (e
 		return req, fmt.Errorf("live: order value %g is below the venue minimum %g for %s", req.Price*req.Qty, r.MinNotional, req.Symbol)
 	}
 	return req, nil
+}
+
+// PriceTick is the tick for this price: r.Tick, or coarser when the venue
+// limits significant figures.
+func PriceTick(price float64, r exchangex.SymbolRules) float64 {
+	tick := r.Tick
+	if r.SigFigs > 0 && price > 0 {
+		if sig := math.Pow(10, math.Floor(math.Log10(price))-float64(r.SigFigs-1)); sig > tick {
+			tick = sig
+		}
+	}
+	return tick
 }

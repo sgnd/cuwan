@@ -353,3 +353,22 @@ func TestRunStartRefusesOverHaltedRuntime(t *testing.T) {
 		}
 	}
 }
+
+// Review #12, 1: a venue not marked full runs live only on its testnet.
+func TestRunStartRefusesUnprovenVenueOnMainnet(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	if err := store.PutExchange(&store.Exchange{Name: "fx", Venue: "hyperliquid", Market: "perp", SecretRef: "secret:x"}); err != nil {
+		t.Fatal(err)
+	}
+	code, env := call(t, "run", "start", "g", "--yes", "--foreground")
+	if code == 0 || !strings.Contains(env.Error, "testnet") || len(fx.calls) != 0 {
+		t.Fatalf("mainnet: %d %+v %v", code, env, fx.calls)
+	}
+	if err := store.PutExchange(&store.Exchange{Name: "fx", Venue: "hyperliquid", Market: "perp", SecretRef: "secret:x", Testnet: true}); err != nil {
+		t.Fatal(err)
+	}
+	if code, env := call(t, "run", "start", "g", "--yes", "--foreground"); code != 0 {
+		t.Fatalf("testnet: %+v", env)
+	}
+}

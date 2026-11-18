@@ -103,10 +103,21 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | `OrderStatus` in native drivers (without it the live loop never refills) | done for Binance and Hyperliquid (cloid is a hash of the cuwan client order ID) |
 | Hyperliquid rules from meta: size step, price tick from 5 significant figures, $10 minimum | done |
 | Hyperliquid key check said a wallet key cannot withdraw without checking | done: fails closed until the signer can prove an API wallet |
-| Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | open: needs the owner's yes and its own review |
+| Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | done: owner said yes; matches the official SDK's test vectors; waits on independent review |
+| Hyperliquid live key check: the secret must be an API wallet of the configured account | done: proven with `userRole`; anything else fails closed |
+| Hyperliquid testnet round trip (like `make testnet` for Binance) | open |
+| Hyperliquid venue label `paper-only` changed to `full` | open: after the first testnet round trip |
+| Review of PR #12, 1: the `paper-only` label was not enforced | done: live start needs a `full` venue or `--testnet` |
+| Review of PR #12, 2: Hyperliquid tick came from the mid, not the order price | done: tick follows each order's price (5 significant figures) |
+| Review of PR #12, 3: a partial fill was reported as filled | done: only a full fill is `filled` |
+| Review of PR #12, low: NaN/Inf and non-positive price or size; fractional leverage; zero or out-of-range key; bare-string status; missing response data; `exchange test` ignored a permissions error | done |
+| Hyperliquid nonce can go back if the clock steps back across a restart | open: store the last nonce, or wait until the clock passes it |
+| Check the SDK test vectors against the SDK source (reviewer could not) | open: vectors copied from hyperliquid-python-sdk tests/signing_test.py; a second person should compare |
+| Confirm the real `userRole` response shape on testnet | open: waits on the Hyperliquid testnet round trip |
+| Confirm an API wallet cannot sign fund-moving actions | open: Hyperliquid docs say withdrawals need the account key; check on testnet |
 | Binance order states normalised to open, filled, canceled (`NEW` was stored as `new`, which the loop skipped) | done |
 | Binance key check via `/sapi/v1/account/apiRestrictions` (USD-M was never checked; spot read the wrong field) | done |
-| Hyperliquid testnet: L1 signing (today returns an error) | open |
+| Hyperliquid testnet: L1 signing (today returns an error) | done: see Hyperliquid signing below |
 | Opt-in integration tests behind an env flag, testnet keys only | done for Binance: `make testnet` (skipped without testnet keys; forced to testnet hosts); first run waits on the owner's testnet keys |
 | Catalog venues stay `paper-only` or `stub` until a native driver lands | deferred: waits on M4 drivers above |
 

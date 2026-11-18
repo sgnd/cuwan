@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -152,6 +153,11 @@ func TestExchangeTest(t *testing.T) {
 	if code != 0 || env.Data.(map[string]any)["price"].(float64) != 100 {
 		t.Fatalf("%d %+v", code, env)
 	}
+	fx.permsErr = errors.New("probe failed")
+	if code, env := call(t, "exchange", "test", "fx"); code == 0 || !strings.Contains(env.Error, "cannot check") {
+		t.Fatalf("permissions error ignored: %+v", env)
+	}
+	fx.permsErr = nil
 	fx.perms.CanWithdraw = true
 	if code, env := call(t, "exchange", "test", "fx"); code == 0 || !strings.Contains(env.Error, "withdrawal") {
 		t.Fatalf("withdraw key passed: %+v", env)

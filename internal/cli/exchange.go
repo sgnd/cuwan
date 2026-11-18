@@ -162,7 +162,10 @@ func exchangeTest(args []string) int {
 	if err != nil {
 		return out.Fail("exchange.test", err, 1)
 	}
-	perms, _ := drv.Permissions(ctx)
+	perms, err := drv.Permissions(ctx)
+	if err != nil {
+		return out.Fail("exchange.test", fmt.Errorf("cannot check API key permissions: %w", err), 1)
+	}
 	if perms.CanWithdraw {
 		return out.Fail("exchange.test", fmt.Errorf("API key appears withdrawal-capable; refuse live use and create a trade-only key"), 1)
 	}
