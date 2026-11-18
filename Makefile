@@ -19,8 +19,8 @@ install: ## Install cuwan into $$GOPATH/bin
 test: ## Fast unit tests
 	CGO_ENABLED=0 go test -p 2 ./...
 
-testnet: ## Binance testnet round trip (needs CUWAN_BINANCE_TESTNET_KEY/SECRET, testnet keys only)
-	CGO_ENABLED=0 go test -count=1 -run Testnet -v ./internal/exchangex/binance
+testnet: ## Testnet round trips; each runs only with its keys set (see the test files)
+	CGO_ENABLED=0 go test -count=1 -run Testnet -v ./internal/exchangex/binance ./internal/exchangex/hyperliquid
 
 lint: ## gofmt check and go vet
 	@test -z "$$(gofmt -l cmd internal)" || { gofmt -l cmd internal; echo "run gofmt -w cmd internal"; exit 1; }

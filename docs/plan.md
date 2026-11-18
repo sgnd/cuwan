@@ -105,7 +105,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Hyperliquid key check said a wallet key cannot withdraw without checking | done: fails closed until the signer can prove an API wallet |
 | Hyperliquid signing (secp256k1, keccak, msgpack): new dependencies | done: owner said yes; matches the official SDK's test vectors; waits on independent review |
 | Hyperliquid live key check: the secret must be an API wallet of the configured account | done: proven with `userRole`; anything else fails closed |
-| Hyperliquid testnet round trip (like `make testnet` for Binance) | open |
+| Hyperliquid testnet round trip (like `make testnet` for Binance) | done: in `make testnet` (skipped without keys; forced to testnet hosts); first run waits on the owner's testnet account and API wallet |
 | Hyperliquid venue label `paper-only` changed to `full` | open: after the first testnet round trip |
 | Review of PR #12, 1: the `paper-only` label was not enforced | done: live start needs a `full` venue or `--testnet` |
 | Review of PR #12, 2: Hyperliquid tick came from the mid, not the order price | done: tick follows each order's price (5 significant figures) |

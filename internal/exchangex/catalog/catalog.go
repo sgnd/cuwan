@@ -1,4 +1,4 @@
-// Package catalog registers 100+ CEX/DEX venue ids for cuwan.
+// Package catalog registers CEX/DEX venue ids that have no native driver yet.
 //
 // Backends:
 //   - native: first-party drivers (binance, hyperliquid) overwrite on import
@@ -6,8 +6,7 @@
 //   - registry: id is listed and openable; public ticker / live may still be stub
 //
 // Coverage is a static registry plus thin adapters (not CCXT Go). Native DEX
-// drivers remain first-class; gocryptotrader-class CEX ids are included and
-// extended with additional venues toward 100+.
+// drivers remain first-class; the CEX ids follow gocryptotrader's list.
 package catalog
 
 import (
