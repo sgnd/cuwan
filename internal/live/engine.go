@@ -12,6 +12,8 @@ package live
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -77,6 +79,25 @@ type Result struct {
 // ErrNoRules means the driver cannot report price tick and size step.
 var ErrNoRules = errors.New("live: this venue driver cannot report tick and step sizes (no Rules); live runs are refused")
 
+// oid builds a client order ID that is unique to this run: a new run of the
+// same bot never reuses an old run's IDs.
+func oid(bot *store.Bot, rt *store.RuntimeState, px float64, side string, gen int) string {
+	return grid.ClientOID(bot.Name+"|"+RunID(rt), px, side, gen)
+}
+
+// RunID returns the run's random ID, making one on first use.
+func RunID(rt *store.RuntimeState) string {
+	if rt.Meta == nil {
+		rt.Meta = map[string]string{}
+	}
+	if rt.Meta["run_id"] == "" {
+		b := make([]byte, 8)
+		_, _ = rand.Read(b)
+		rt.Meta["run_id"] = hex.EncodeToString(b)
+	}
+	return rt.Meta["run_id"]
+}
+
 // statuser returns the driver's OrderStatuser or ErrNoOrderStatus.
 func statuser(ex exchangex.Exchange) (OrderStatuser, error) {
 	st, ok := ex.(OrderStatuser)
@@ -99,7 +120,7 @@ func CanRun(ex exchangex.Exchange) error {
 
 // place fits the order to the venue filters, saves it as pending, sends it,
 // then saves the answer. crossing marks an order meant to fill at once.
-func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, save Saver, req exchangex.PlaceReq, crossing bool) (int, error) {
+func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, save Saver, req exchangex.PlaceReq, crossing bool, parent string) (int, error) {
 	rp, ok := ex.(exchangex.RulesProvider)
 	if !ok {
 		return -1, ErrNoRules
@@ -113,7 +134,7 @@ func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, s
 	}
 	rt.Orders = append(rt.Orders, store.RuntimeOrder{
 		ClientOID: req.ClientOID, Side: req.Side, Price: req.Price, Qty: req.Qty,
-		ReduceOnly: req.ReduceOnly, Status: StatusPending, SentAt: now(),
+		ReduceOnly: req.ReduceOnly, Status: StatusPending, SentAt: now(), Parent: parent,
 	})
 	i := len(rt.Orders) - 1
 	if err := save(); err != nil {
@@ -144,8 +165,8 @@ func PlaceGrid(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 		if qty <= 0 {
 			qty = 0.001
 		}
-		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: side, Price: px, Qty: qty, ClientOID: grid.ClientOID(bot.Name, px, side, len(rt.Orders)+1)}
-		if _, err := place(ctx, ex, rt, save, req, false); err != nil {
+		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: side, Price: px, Qty: qty, ClientOID: oid(bot, rt, px, side, len(rt.Orders)+1)}
+		if _, err := place(ctx, ex, rt, save, req, false, ""); err != nil {
 			return err
 		}
 	}
@@ -170,6 +191,7 @@ func Reconcile(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 			o.Misses++
 			if o.Misses >= pendingMisses && now().Sub(o.SentAt) >= pendingGrace {
 				o.Status = StatusFailed
+				reopenParent(rt, o.Parent) // its grid level gets a new counter order
 			}
 			changed = true
 			continue
@@ -258,7 +280,7 @@ func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.
 	if bot.Levels > 1 {
 		step = (bot.Upper - bot.Lower) / float64(bot.Levels-1)
 	}
-	for i, n := 0, len(rt.Orders); i < n; i++ {
+	for i := range rt.Orders {
 		o := rt.Orders[i]
 		if (o.Status != StatusOpen && o.Status != StatusUnknown) || o.ReduceOnly {
 			continue
@@ -272,25 +294,44 @@ func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.
 			return Result{}, err
 		}
 		apply(&rt.Orders[i], got)
-		if rt.Orders[i].Status != StatusFilled {
-			if err := save(); err != nil {
-				return Result{}, err
-			}
+		if err := save(); err != nil {
+			return Result{}, err
+		}
+	}
+	// Every filled grid order gets one counter order, however it got filled
+	// (seen leaving the book, or a pending order later found filled).
+	for i, n := 0, len(rt.Orders); i < n; i++ {
+		o := rt.Orders[i]
+		if o.Status != StatusFilled || o.ReduceOnly || o.Countered {
 			continue
 		}
 		opp, px := "sell", o.Price+step
 		if o.Side == "sell" {
 			opp, px = "buy", o.Price-step
 		}
+		rt.Orders[i].Countered = true
 		if px <= 0 {
 			continue
 		}
-		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: opp, Price: px, Qty: o.Qty, ClientOID: grid.ClientOID(bot.Name, px, opp, len(rt.Orders)+1)}
-		if _, err := place(ctx, ex, rt, save, req, false); err != nil {
+		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: opp, Price: px, Qty: o.Qty, ClientOID: oid(bot, rt, px, opp, len(rt.Orders)+1)}
+		if _, err := place(ctx, ex, rt, save, req, false, o.ClientOID); err != nil {
 			return Result{}, err
 		}
 	}
 	return Result{}, save()
+}
+
+// reopenParent lets a grid order be countered again after its counter
+// order failed.
+func reopenParent(rt *store.RuntimeState, parent string) {
+	if parent == "" {
+		return
+	}
+	for i := range rt.Orders {
+		if rt.Orders[i].ClientOID == parent {
+			rt.Orders[i].Countered = false
+		}
+	}
 }
 
 // guard returns a reason to stop, or "".
@@ -389,7 +430,7 @@ func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 	}
 	for i := range rt.Orders {
 		o := &rt.Orders[i]
-		if o.Status != StatusOpen && o.Status != StatusPending {
+		if o.Status != StatusOpen && o.Status != StatusPending && o.Status != StatusUnknown {
 			continue
 		}
 		err := ex.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
@@ -404,7 +445,7 @@ func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 			return err
 		default:
 			apply(o, got)
-			if o.Status == StatusOpen || o.Status == StatusPending {
+			if o.Status == StatusOpen || o.Status == StatusPending || o.Status == StatusUnknown {
 				o.Status = StatusCanceled
 			}
 		}
@@ -446,9 +487,9 @@ func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st Ord
 		}
 		req := exchangex.PlaceReq{
 			Symbol: bot.Symbol, Side: side, Price: px, Qty: math.Abs(net), ReduceOnly: true, IOC: true,
-			ClientOID: grid.ClientOID(bot.Name, px, side, len(rt.Orders)+1),
+			ClientOID: oid(bot, rt, px, side, len(rt.Orders)+1),
 		}
-		i, err := place(ctx, ex, rt, save, req, true)
+		i, err := place(ctx, ex, rt, save, req, true, "")
 		if err != nil {
 			return err
 		}

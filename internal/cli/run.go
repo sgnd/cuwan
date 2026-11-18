@@ -143,7 +143,7 @@ const maxStepErrors = 6
 // errors in a row.
 func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int {
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP) // HUP: the terminal closed
 	defer signal.Stop(sig)
 	tick := time.NewTicker(runEvery)
 	defer tick.Stop()

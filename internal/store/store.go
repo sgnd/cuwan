@@ -284,6 +284,10 @@ type RuntimeOrder struct {
 	// SentAt and Misses track a pending order the venue did not know yet.
 	SentAt time.Time `json:"sent_at,omitempty"`
 	Misses int       `json:"misses,omitempty"`
+	// Parent is the client order ID of the grid order this one counters.
+	Parent string `json:"parent,omitempty"`
+	// Countered is set on a filled grid order once its counter order is sent.
+	Countered bool `json:"countered,omitempty"`
 }
 
 func putJSON(typ, id string, v any) (string, error) {

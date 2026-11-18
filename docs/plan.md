@@ -86,6 +86,9 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Re-review N4: start over a halted bot dropped the old runtime | done: start refuses until `run stop` |
 | Re-review N5: the close was a GTC limit and could leave the position open | done: reduce-only IOC, 3 tries with fresh prices, venue position must shrink |
 | Re-review low: stop file left after timeout; `unknown` never rechecked; not-found on cancel; late fills on stop | done |
+| Review 3 (medium): client order IDs repeated across runs | done: a random run ID is part of every live client order ID |
+| Review 3 low: unknown orders skipped by CancelAll; SIGHUP not caught; lost counter orders | done: unknown is cancelled; SIGHUP marks the bot unguarded; every filled grid order gets one counter order, retried if it failed |
+| Review 3 low: minimum order value (notional) not in the size rules | open: on the Binance branch |
 | Re-review low: Binance hedge mode (`positionSide`) | open: refuse hedge-mode accounts or send `positionSide` |
 | Detached live worker (like paper), so the loop survives the terminal | open: until then live start needs `--foreground` |
 | Restart safety: resume from stored runtime by client order ID, no duplicate orders | open |

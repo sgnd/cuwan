@@ -577,3 +577,76 @@ func TestUnknownIsCheckedAgain(t *testing.T) {
 		t.Fatalf("%+v placed=%v", rt.Orders[1], b.placed)
 	}
 }
+
+// Review 3, medium: a new run never reuses the last run's client order IDs.
+func TestClientIDsDifferPerRun(t *testing.T) {
+	b := newBook(100)
+	rt1, _, _ := start(t, b, gridBot)
+	rt2, _, _ := start(t, newBook(100), gridBot)
+	if RunID(rt1) == RunID(rt2) {
+		t.Fatal("same run ID twice")
+	}
+	for i := range rt1.Orders {
+		if rt1.Orders[i].ClientOID == rt2.Orders[i].ClientOID {
+			t.Fatalf("order %d reuses ID %s", i, rt1.Orders[i].ClientOID)
+		}
+		if len(rt1.Orders[i].ClientOID) > 36 {
+			t.Fatalf("ID longer than Binance's 36: %s", rt1.Orders[i].ClientOID)
+		}
+	}
+}
+
+// Review 3, low: a pending order later found filled gets its counter order.
+func TestPendingFoundFilledIsCountered(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return true, errors.New("timeout") }
+	b.fill(t, "buy", 95)
+	_, _ = Step(context.Background(), gridBot, b, rt, save) // 100 sell sent, timed out, pending
+	b.placeErr = nil
+	b.fill(t, "sell", 100) // the pending sell filled on the venue
+	b.placed = nil
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.placed) != 1 || b.placed[0].Side != "buy" || b.placed[0].Price != 95 {
+		t.Fatalf("counter order %+v", b.placed)
+	}
+}
+
+// Review 3, low: a counter order that never reached the venue is sent again.
+func TestFailedCounterIsRetried(t *testing.T) {
+	clock := time.Now()
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = time.Now })
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return false, errors.New("rejected") }
+	b.fill(t, "buy", 95)
+	_, _ = Step(context.Background(), gridBot, b, rt, save)
+	b.placeErr = nil
+	for i := 0; i < 3; i++ {
+		_, _ = Step(context.Background(), gridBot, b, rt, save)
+	}
+	clock = clock.Add(3 * time.Minute)
+	b.placed = nil
+	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.placed) != 1 || b.placed[0].Side != "sell" || b.placed[0].Price != 100 {
+		t.Fatalf("not retried: %+v", b.placed)
+	}
+}
+
+// Review 3, low: CancelAll also cancels orders in an unknown state.
+func TestCancelAllCoversUnknown(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	rt.Orders[0].Status = StatusUnknown
+	if err := CancelAll(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Orders[0].Status != StatusCanceled || b.orders[rt.Orders[0].ClientOID].Status != StatusCanceled {
+		t.Fatalf("%+v", rt.Orders[0])
+	}
+}
