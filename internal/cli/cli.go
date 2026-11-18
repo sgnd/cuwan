@@ -22,7 +22,10 @@ var Version = "dev"
 
 // Execute runs cuwan with os.Args[1:] and returns the process exit code.
 func Execute() int {
-	args := os.Args[1:]
+	return run(os.Args[1:])
+}
+
+func run(args []string) int {
 	if len(args) == 0 {
 		printRootHelp(os.Stdout)
 		return 0

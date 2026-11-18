@@ -40,21 +40,24 @@ func runStart(args []string) int {
 	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
-	exRec, drv, err := openNamedExchange(bot.Exchange, dry)
+	exRec, drv, err := openExchange(bot.Exchange, dry)
 	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
 	ctx := context.Background()
-	perms, err := drv.Permissions(ctx)
-	if err == nil && perms.CanWithdraw && !dry {
-		return out.Fail("run.start", fmt.Errorf("refusing live run: API key appears withdrawal-capable"), 1)
+	if !dry {
+		// Fail closed: a live run needs a key proven unable to withdraw.
+		perms, err := drv.Permissions(ctx)
+		if err != nil {
+			return out.Fail("run.start", fmt.Errorf("refusing live run: cannot check API key permissions: %w", err), 1)
+		}
+		if perms.CanWithdraw {
+			return out.Fail("run.start", fmt.Errorf("refusing live run: API key appears withdrawal-capable"), 1)
+		}
 	}
 	if bot.Leverage > 0 {
 		lev, _ := risk.CapLeverage(bot.Leverage)
 		bot.Leverage = lev
-		if !dry {
-			_ = drv.SetLeverage(ctx, bot.Symbol, lev)
-		}
 	}
 	plan, err := grid.Build(bot.Lower, bot.Upper, bot.Levels)
 	if err != nil {
@@ -80,6 +83,12 @@ func runStart(args []string) int {
 			msg := fmt.Sprintf("place %d live grid orders for %s on %s at mid≈%g?", len(plan.Prices), bot.Name, exRec.Venue, ticker.Price)
 			if !confirm(msg) {
 				return out.Fail("run.start", fmt.Errorf("aborted"), 1)
+			}
+		}
+		// Nothing touches the account before the person confirmed.
+		if bot.Leverage > 0 {
+			if err := drv.SetLeverage(ctx, bot.Symbol, bot.Leverage); err != nil {
+				return out.Fail("run.start", err, 1)
 			}
 		}
 	}
@@ -149,7 +158,7 @@ func runStop(args []string) int {
 		if out.Agent() {
 			return out.Fail("run.stop", fmt.Errorf("destructive stop needs --yes from a person"), 1)
 		}
-		if !confirm("stop live bot "+pos[0]+"?") {
+		if !confirm("stop live bot " + pos[0] + "?") {
 			return out.Fail("run.stop", fmt.Errorf("aborted"), 1)
 		}
 	}
@@ -162,7 +171,7 @@ func runStop(args []string) int {
 		return out.Fail("run.stop", err, 1)
 	}
 	if rt.Mode == "live" && rt.Status == "running" {
-		_, drv, err := openNamedExchange(bot.Exchange, false)
+		_, drv, err := openExchange(bot.Exchange, false)
 		if err == nil {
 			ctx := context.Background()
 			for _, o := range rt.Orders {

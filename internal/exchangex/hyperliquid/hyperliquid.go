@@ -35,10 +35,10 @@ func Open(cfg exchangex.Config) (exchangex.Exchange, error) {
 		info, exch = testnetInfo, testnetExchange
 	}
 	return &Driver{
-		cfg:      cfg,
-		infoURL:  info,
-		exchURL:  exch,
-		client:   &http.Client{Timeout: 15 * time.Second},
+		cfg:     cfg,
+		infoURL: info,
+		exchURL: exch,
+		client:  &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
@@ -150,12 +150,12 @@ func (d *Driver) OpenOrders(ctx context.Context, symbol string) ([]exchangex.Ord
 	}
 	body := map[string]any{"type": "openOrders", "user": d.cfg.APIKey}
 	var raw []struct {
-		Coin  string  `json:"coin"`
-		Side  string  `json:"side"`
+		Coin    string `json:"coin"`
+		Side    string `json:"side"`
 		LimitPx string `json:"limitPx"`
-		Sz    string  `json:"sz"`
-		Oid   int64   `json:"oid"`
-		Cloid string  `json:"cloid"`
+		Sz      string `json:"sz"`
+		Oid     int64  `json:"oid"`
+		Cloid   string `json:"cloid"`
 	}
 	if err := d.postJSON(ctx, d.infoURL, body, &raw); err != nil {
 		return nil, err

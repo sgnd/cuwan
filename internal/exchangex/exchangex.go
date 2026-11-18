@@ -125,9 +125,9 @@ type VenueInfo struct {
 }
 
 var (
-	regMu  sync.RWMutex
-	ctors  = map[string]Factory{}
-	metas  = map[string]VenueInfo{}
+	regMu sync.RWMutex
+	ctors = map[string]Factory{}
+	metas = map[string]VenueInfo{}
 )
 
 // Factory builds an Exchange from config.
