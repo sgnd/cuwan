@@ -79,7 +79,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Review of PR #6, 4 (medium): no driver could confirm fills; spot had no loss guard | done: live start refuses drivers without `OrderStatus`; spot stops (cancels, does not sell) 5% below the grid |
 | Review of PR #6, 5 (medium): flatten closed the whole symbol position | done: closes the bot's own net size; refuses when the venue position does not cover it |
 | Review of PR #6, low: partial fills, empty IDs, close price and close check | done: partial fills count; empty IDs never match; fresh price for the close; close must be filled |
-| Local alerts beyond stderr for halts and guards | open: see M6 alerts |
+| Local alerts beyond stderr for halts and guards | done: see M6 alerts |
 | Re-review N1 (high): live start without the loop left the bot unguarded | done: live start needs `--foreground`; a signal marks the bot `unguarded` |
 | Re-review N2: prices and sizes not rounded to the venue filters | done: drivers report tick, step, minimum size; live start refuses drivers that cannot |
 | Re-review N3: not-found right after a timeout marked the order failed | done: 3 lookups over 2 minutes first; stop cancels pending orders by client ID |
@@ -137,7 +137,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 |---|---|
 | Backtest a grid on public historical candles before running it | open |
 | Paper vs live profit report (realised, unrealised, fees) per bot | open |
-| Local alerts on fill, stop, and preventive close (desktop notify, webhook the user sets) | open |
+| Local alerts on fill, stop, and preventive close (desktop notify, webhook the user sets) | done: `cuwan alert set, show, test`; desktop on macOS and Linux, HTTPS webhook from `secret:NAME`; a failed alert goes to the audit log |
 | Agent access: MCP server or skill in `skills/` covering every command, with the same guardrails | open |
 | No telemetry: state it in README and `docs/design/principles.md`; a test that the CLI makes no call to a cuwan host | open |
 | Export and import of bots and history (no secrets) for backup and moving machines | open |
