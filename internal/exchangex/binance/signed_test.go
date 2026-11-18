@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -109,5 +110,17 @@ func TestOrderStatusAndNormalisedStates(t *testing.T) {
 		if got := normStatus(in); got != want {
 			t.Errorf("%s -> %s want %s", in, got, want)
 		}
+	}
+}
+
+func TestOrderStatusNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"code":-2013,"msg":"Order does not exist."}`))
+	}))
+	t.Cleanup(srv.Close)
+	_, err := drv(srv, exchangex.MarketUSDM, true).OrderStatus(context.Background(), "BTCUSDT", "", "c")
+	if !errors.Is(err, exchangex.ErrOrderNotFound) {
+		t.Fatalf("err %v", err)
 	}
 }

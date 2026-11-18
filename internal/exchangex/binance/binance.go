@@ -59,6 +59,9 @@ func futuresBase(testnet bool) string {
 	return "https://fapi.binance.com"
 }
 
+// codeNoSuchOrder is Binance's "Order does not exist." error code.
+const codeNoSuchOrder = -2013
+
 // Driver talks to Binance REST.
 type Driver struct {
 	cfg    exchangex.Config
@@ -440,6 +443,12 @@ func (d *Driver) signedAt(ctx context.Context, base, method, path string, q url.
 		return err
 	}
 	if resp.StatusCode >= 300 {
+		var e struct {
+			Code int `json:"code"`
+		}
+		if json.Unmarshal(body, &e) == nil && e.Code == codeNoSuchOrder {
+			return fmt.Errorf("binance: %w", exchangex.ErrOrderNotFound)
+		}
 		return fmt.Errorf("binance: %s: %s", resp.Status, truncate(body))
 	}
 	if dest == nil {
