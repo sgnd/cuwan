@@ -88,6 +88,8 @@ func setup(t *testing.T, fx *fakeEx) {
 		}
 		return k, map[string]string{"key_mode": "test"}, nil
 	}
+	prevLoop := startLoop
+	startLoop = func(*store.Bot, exchangex.Exchange, *store.RuntimeState) int { return 0 }
 	prev := openExchange
 	openExchange = func(name string, _ bool) (*store.Exchange, exchangex.Exchange, error) {
 		e, err := store.GetExchange(name)
@@ -95,6 +97,7 @@ func setup(t *testing.T, fx *fakeEx) {
 	}
 	t.Cleanup(func() {
 		openExchange = prev
+		startLoop = prevLoop
 		store.ResetForTest()
 		store.KeySource = prevKS
 	})
@@ -145,7 +148,7 @@ func TestUnknownCommand(t *testing.T) {
 func TestRunStartAgentNeedsYes(t *testing.T) {
 	fx := &fakeEx{}
 	setup(t, fx)
-	code, env := call(t, "run", "start", "g")
+	code, env := call(t, "run", "start", "g", "--foreground")
 	if code == 0 || !strings.Contains(env.Error, "person confirm") {
 		t.Fatalf("code=%d env=%+v", code, env)
 	}
@@ -157,7 +160,7 @@ func TestRunStartAgentNeedsYes(t *testing.T) {
 func TestRunStartPermissionsErrorFailsClosed(t *testing.T) {
 	fx := &fakeEx{permsErr: errors.New("probe failed")}
 	setup(t, fx)
-	code, env := call(t, "run", "start", "g", "--yes")
+	code, env := call(t, "run", "start", "g", "--yes", "--foreground")
 	if code == 0 || !strings.Contains(env.Error, "cannot check") || len(fx.calls) != 0 {
 		t.Fatalf("code=%d env=%+v calls=%v", code, env, fx.calls)
 	}
@@ -166,7 +169,7 @@ func TestRunStartPermissionsErrorFailsClosed(t *testing.T) {
 func TestRunStartWithdrawKeyRefused(t *testing.T) {
 	fx := &fakeEx{perms: exchangex.Permissions{CanWithdraw: true}}
 	setup(t, fx)
-	code, _ := call(t, "run", "start", "g", "--yes")
+	code, _ := call(t, "run", "start", "g", "--yes", "--foreground")
 	if code == 0 || len(fx.calls) != 0 {
 		t.Fatalf("code=%d calls=%v", code, fx.calls)
 	}
@@ -184,7 +187,7 @@ func TestRunStartDryRunPlacesNothing(t *testing.T) {
 func TestRunStartLiveCapsLeverageAfterConfirm(t *testing.T) {
 	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
 	setup(t, fx)
-	code, env := call(t, "run", "start", "g", "--yes")
+	code, env := call(t, "run", "start", "g", "--yes", "--foreground")
 	if code != 0 || !env.OK {
 		t.Fatalf("code=%d env=%+v", code, env)
 	}
@@ -211,7 +214,7 @@ func TestPositional(t *testing.T) {
 func TestRunStopFlattenClosesPosition(t *testing.T) {
 	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
 	setup(t, fx)
-	if code, env := call(t, "run", "start", "g", "--yes"); code != 0 {
+	if code, env := call(t, "run", "start", "g", "--yes", "--foreground"); code != 0 {
 		t.Fatalf("%+v", env)
 	}
 	fx.calls = nil
@@ -254,7 +257,7 @@ func TestRunLoopHaltsAfterErrorsInARow(t *testing.T) {
 	setup(t, fx)
 	runEvery = time.Millisecond
 	t.Cleanup(func() { runEvery = 5 * time.Second })
-	if code, env := call(t, "run", "start", "g", "--yes"); code != 0 {
+	if code, env := call(t, "run", "start", "g", "--yes", "--foreground"); code != 0 {
 		t.Fatalf("%+v", env)
 	}
 	bot, _ := store.GetBot("g")
@@ -285,7 +288,7 @@ func TestRunStartRefusesDriverWithoutOrderStatus(t *testing.T) {
 		e, err := store.GetExchange(name)
 		return e, bare{fx}, err
 	}
-	code, env := call(t, "run", "start", "g", "--yes")
+	code, env := call(t, "run", "start", "g", "--yes", "--foreground")
 	if code == 0 || !strings.Contains(env.Error, "OrderStatus") || len(fx.calls) != 0 {
 		t.Fatalf("%d %+v %v", code, env, fx.calls)
 	}
@@ -295,7 +298,7 @@ func TestRunStartRefusesDriverWithoutOrderStatus(t *testing.T) {
 func TestRunStopTakesOverFromLoop(t *testing.T) {
 	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
 	setup(t, fx)
-	if code, env := call(t, "run", "start", "g", "--yes"); code != 0 {
+	if code, env := call(t, "run", "start", "g", "--yes", "--foreground"); code != 0 {
 		t.Fatalf("%+v", env)
 	}
 	held, err := live.TryLock("g")
@@ -314,5 +317,35 @@ func TestRunStopTakesOverFromLoop(t *testing.T) {
 	}
 	if live.StopRequested("g") {
 		t.Fatal("stop request left behind")
+	}
+}
+
+// Review N1: live start without the loop is refused.
+func TestRunStartNeedsForeground(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	code, env := call(t, "run", "start", "g", "--yes")
+	if code == 0 || !strings.Contains(env.Error, "--foreground") || len(fx.calls) != 0 {
+		t.Fatalf("%d %+v %v", code, env, fx.calls)
+	}
+}
+
+// Review N4: start never drops a halted or unguarded runtime.
+func TestRunStartRefusesOverHaltedRuntime(t *testing.T) {
+	for _, st := range []string{"halted", "unguarded", "running"} {
+		fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+		setup(t, fx)
+		if err := store.PutRuntime(&store.RuntimeState{BotName: "g", Mode: "live", Status: st,
+			Orders: []store.RuntimeOrder{{ClientOID: "old", Status: "open"}}}); err != nil {
+			t.Fatal(err)
+		}
+		code, env := call(t, "run", "start", "g", "--yes", "--foreground")
+		if code == 0 || !strings.Contains(env.Error, "run stop") || len(fx.calls) != 0 {
+			t.Errorf("%s: %d %+v", st, code, env)
+		}
+		rt, _ := store.GetRuntime("g")
+		if len(rt.Orders) != 1 || rt.Orders[0].ClientOID != "old" {
+			t.Errorf("%s: old runtime dropped", st)
+		}
 	}
 }

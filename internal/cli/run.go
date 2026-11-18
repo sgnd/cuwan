@@ -89,6 +89,10 @@ func runStart(args []string) int {
 		out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("dry run %s orders=%d (nothing sent)", bot.Name, len(rt.Orders)))
 		return 0
 	}
+	// The guards run only inside the loop, so a live bot must have one.
+	if !flagBool(args, "--foreground") {
+		return out.Fail("run.start", fmt.Errorf("live runs need --foreground (the preventive close and loss guard run only while the loop runs; a detached worker is planned)"), 2)
+	}
 	if out.Agent() && !flagBool(args, "--yes") {
 		return out.Fail("run.start", fmt.Errorf("live trading requires a person confirm; pass --yes only when a human approved"), 1)
 	}
@@ -104,8 +108,9 @@ func runStart(args []string) int {
 	}
 	defer lock.Unlock()
 	live.ClearStop(bot.Name)
-	if prev, err := store.GetRuntime(bot.Name); err == nil && prev.Mode == "live" && prev.Status == "running" {
-		return out.Fail("run.start", fmt.Errorf("bot %s already has a live runtime; run `cuwan run stop %s` first", bot.Name, bot.Name), 1)
+	// Never drop a runtime that may still have orders on the book.
+	if prev, err := store.GetRuntime(bot.Name); err == nil && prev.Mode == "live" && prev.Status != "stopped" {
+		return out.Fail("run.start", fmt.Errorf("bot %s has a live runtime in state %q; run `cuwan run stop %s` first", bot.Name, prev.Status, bot.Name), 1)
 	}
 	// Nothing touches the account before the person confirmed.
 	if bot.Leverage > 0 {
@@ -121,11 +126,11 @@ func runStart(args []string) int {
 	}
 	_ = store.AppendAudit("run.start", map[string]any{"bot": bot.Name, "orders": len(rt.Orders)})
 	out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("live start %s orders=%d", bot.Name, len(rt.Orders)))
-	if !flagBool(args, "--foreground") {
-		return 0
-	}
-	return runLoop(bot, drv, rt)
+	return startLoop(bot, drv, rt)
 }
+
+// startLoop is a seam so CLI tests can skip the blocking loop.
+var startLoop = runLoop
 
 // runEvery is the live loop interval; tests shorten it.
 var runEvery = 5 * time.Second
@@ -148,8 +153,12 @@ func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int
 	for {
 		select {
 		case <-sig:
+			// Orders stay on the book with no guard watching them.
+			rt.Status = "unguarded"
+			_ = save()
 			_ = store.AppendAudit("run.signal", map[string]any{"bot": bot.Name})
-			return 0 // orders stay on the book; `run stop` cancels them
+			alert(bot.Name, "loop ended by signal; orders are still on the book and unguarded; run `cuwan run stop "+bot.Name+"`")
+			return 0
 		case <-tick.C:
 		}
 		if live.StopRequested(bot.Name) {
@@ -245,7 +254,7 @@ func runStop(args []string) int {
 	if err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
-	if rt.Mode == "live" && (rt.Status == "running" || rt.Status == "halted") {
+	if rt.Mode == "live" && rt.Status != "stopped" {
 		_, drv, err := openExchange(bot.Exchange, false)
 		if err != nil {
 			return out.Fail("run.stop", err, 1)
