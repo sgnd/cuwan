@@ -164,7 +164,7 @@ func exchangeTest(args []string) int {
 	}
 	perms, _ := drv.Permissions(ctx)
 	if perms.CanWithdraw {
-		return out.Fail("exchange.test", fmt.Errorf("API key appears withdrawal-capable; refuse live use — create a trade-only key"), 1)
+		return out.Fail("exchange.test", fmt.Errorf("API key appears withdrawal-capable; refuse live use and create a trade-only key"), 1)
 	}
 	out.Print(os.Stdout, "exchange.test", map[string]any{
 		"name": pos[0], "symbol": symbol, "price": t.Price, "permissions": perms,

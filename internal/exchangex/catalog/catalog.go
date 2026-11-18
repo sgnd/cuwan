@@ -255,7 +255,7 @@ func allEntries() []entry {
 		spot("okcoinintl", nil),
 		spot("huobipro", nil),
 
-		// DEX / perps (hyperliquid is native — omitted here)
+		// DEX / perps (hyperliquid has a native driver, so it is not listed here)
 		perpDEX("dydx", nil),
 		perpDEX("dydxv4", nil),
 		perpDEX("gmx", nil),

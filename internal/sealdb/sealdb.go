@@ -456,7 +456,7 @@ func (t *Tx) AppendAudit(payload []byte) error {
 		return err
 	}
 	now := time.Now().UnixNano()
-	// provisional seq for sealing; rewrite after insert if needed — bind to id only
+	// provisional seq for sealing; rewrite after insert if needed; bind to id only
 	sealed, err := t.key.Seal(sealrow.Row{ID: id, Type: "audit", Version: 1}, payload)
 	if err != nil {
 		return err

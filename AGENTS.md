@@ -9,7 +9,7 @@ Set `CUWAN_AGENT=1` so cuwan never prompts and emits JSON envelopes.
 
 1. Start with `cuwan guide` and `cuwan schema`. Confirm with `cuwan version` / `cuwan doctor`.
 2. Never put secrets on the command line. Use stdin: `echo -n VALUE | cuwan secret set NAME`.
-3. Secret values in output are `[hidden]` or `[secret:NAME]` — never ask the user to paste raw keys into chat logs you will echo back.
+3. Secret values in output are `[hidden]` or `[secret:NAME]`. Never ask the user to paste raw keys into chat logs you will echo back.
 4. Live `cuwan run start` needs a **person** confirm (`--yes` only after human approval). Do not invent `--yes`.
 5. Destructive `stop` / `rm` / flatten need `--yes` from a person.
 6. Do not read or rewrite `~/.cuwan` by hand; do not change `CUWAN_HOME`.

@@ -17,7 +17,7 @@ func cmdOrders(args []string) int {
 	}
 	_, drv, err := openExchange(pos[0], false)
 	if err != nil {
-		// try paper/public — still need creds for open orders; show runtime instead
+		// Open orders need credentials; without them, show the stored runtime.
 		if rt, rerr := store.GetRuntime(pos[0]); rerr == nil {
 			out.Print(os.Stdout, "orders", rt.Orders, fmt.Sprintf("runtime orders for %s: %d", pos[0], len(rt.Orders)))
 			return 0
