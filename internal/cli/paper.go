@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/out"
@@ -70,11 +71,16 @@ func paperStart(args []string) int {
 		return 0
 	}
 
+	// Detached workers strip unlock env; passphrase stores cannot open in the child.
+	if mode, _ := storeKeyMode(); mode == "passphrase" {
+		return out.Fail("paper.start", fmt.Errorf("detached paper needs keychain/keyfile unlock (passphrase cannot be inherited); use --foreground or CUWAN_KEYCHAIN / keyfile"), 1)
+	}
+
 	pid, err := paper.DetachWorker(name)
 	if err != nil {
 		return out.Fail("paper.start", err, 1)
 	}
-	rt, err := paper.Status(name)
+	rt, err := paper.WaitRuntime(name, 8*time.Second)
 	if err != nil {
 		return out.Fail("paper.start", fmt.Errorf("worker pid=%d started but runtime not ready: %w", pid, err), 1)
 	}

@@ -48,3 +48,11 @@ func peekMeta() (map[string]string, error) {
 	// lazy import cycle avoidance: use sealdb via store path
 	return storePeek()
 }
+
+func storeKeyMode() (string, error) {
+	meta, err := storePeek()
+	if err != nil {
+		return "", err
+	}
+	return meta["key_mode"], nil
+}
