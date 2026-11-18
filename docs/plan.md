@@ -150,6 +150,7 @@ Follows how `efolusi/komando-apps` is built. Starts after M5.
 | Item | Status |
 |---|---|
 | Mac, iPhone and iPad app that drives the local CLI: bots, paper, live status, alerts | deferred: waits on M5 |
+| App sign-in and purchase | deferred: waits on M5; via sso/pay, never built in cuwan |
 
 ## M8: Paid cloud (`efolusi/cuwan-cloud`)
 
@@ -157,6 +158,6 @@ Follows how `efolusi/komando-cloud` is built. Starts after M5.
 
 | Item | Status |
 |---|---|
-| Account, billing and website | deferred: waits on M5 |
+| Account, billing and website | deferred: waits on M5; login, accounts, plans, billing and checkout come via sso/pay (`efolusi/sso`, `efolusi/pay`), never built in cuwan |
 | End-to-end encrypted sync of bots and history (no exchange keys in the cloud) | deferred: waits on M5 |
 | Optional always-on runner and push alerts | deferred: waits on M5; needs a design for keys that never leave the user's control |
