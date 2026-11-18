@@ -35,6 +35,10 @@ func (f *fakeEx) OrderStatus(_ context.Context, _, id, cid string) (exchangex.Or
 	return exchangex.Order{}, exchangex.ErrOrderNotFound
 }
 
+func (f *fakeEx) Rules(context.Context, string) (exchangex.SymbolRules, error) {
+	return exchangex.SymbolRules{Tick: 0.01, Step: 0.001, MinQty: 0.001}, nil
+}
+
 // bare hides OrderStatus.
 type bare struct{ exchangex.Exchange }
 

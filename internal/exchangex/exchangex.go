@@ -40,6 +40,19 @@ const (
 // with that ID. Drivers wrap it so callers can use errors.Is.
 var ErrOrderNotFound = errors.New("order not found")
 
+// SymbolRules are a symbol's order filters: price tick, size step and the
+// smallest size the venue accepts.
+type SymbolRules struct {
+	Tick   float64
+	Step   float64
+	MinQty float64
+}
+
+// RulesProvider is an optional driver interface that reports SymbolRules.
+type RulesProvider interface {
+	Rules(ctx context.Context, symbol string) (SymbolRules, error)
+}
+
 // Exchange is a trading venue driver.
 type Exchange interface {
 	Name() string

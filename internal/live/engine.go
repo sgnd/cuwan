@@ -62,6 +62,9 @@ type Result struct {
 	Reason  string
 }
 
+// ErrNoRules means the driver cannot report price tick and size step.
+var ErrNoRules = errors.New("live: this venue driver cannot report tick and step sizes (no Rules); live runs are refused")
+
 // statuser returns the driver's OrderStatuser or ErrNoOrderStatus.
 func statuser(ex exchangex.Exchange) (OrderStatuser, error) {
 	st, ok := ex.(OrderStatuser)
@@ -73,12 +76,29 @@ func statuser(ex exchangex.Exchange) (OrderStatuser, error) {
 
 // CanRun reports whether the driver can run live.
 func CanRun(ex exchangex.Exchange) error {
-	_, err := statuser(ex)
-	return err
+	if _, err := statuser(ex); err != nil {
+		return err
+	}
+	if _, ok := ex.(exchangex.RulesProvider); !ok {
+		return ErrNoRules
+	}
+	return nil
 }
 
-// place saves the order as pending, sends it, then saves the answer.
-func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, save Saver, req exchangex.PlaceReq) (int, error) {
+// place fits the order to the venue filters, saves it as pending, sends it,
+// then saves the answer. crossing marks an order meant to fill at once.
+func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, save Saver, req exchangex.PlaceReq, crossing bool) (int, error) {
+	rp, ok := ex.(exchangex.RulesProvider)
+	if !ok {
+		return -1, ErrNoRules
+	}
+	rules, err := rp.Rules(ctx, req.Symbol)
+	if err != nil {
+		return -1, err
+	}
+	if req, err = roundReq(req, rules, crossing); err != nil {
+		return -1, err
+	}
 	rt.Orders = append(rt.Orders, store.RuntimeOrder{
 		ClientOID: req.ClientOID, Side: req.Side, Price: req.Price, Qty: req.Qty,
 		ReduceOnly: req.ReduceOnly, Status: StatusPending,
@@ -113,7 +133,7 @@ func PlaceGrid(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 			qty = 0.001
 		}
 		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: side, Price: px, Qty: qty, ClientOID: grid.ClientOID(bot.Name, px, side, len(rt.Orders)+1)}
-		if _, err := place(ctx, ex, rt, save, req); err != nil {
+		if _, err := place(ctx, ex, rt, save, req, false); err != nil {
 			return err
 		}
 	}
@@ -250,7 +270,7 @@ func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.
 			continue
 		}
 		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: opp, Price: px, Qty: o.Qty, ClientOID: grid.ClientOID(bot.Name, px, opp, len(rt.Orders)+1)}
-		if _, err := place(ctx, ex, rt, save, req); err != nil {
+		if _, err := place(ctx, ex, rt, save, req, false); err != nil {
 			return Result{}, err
 		}
 	}
@@ -386,7 +406,7 @@ func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st Ord
 		Symbol: bot.Symbol, Side: side, Price: px, Qty: math.Abs(net), ReduceOnly: true,
 		ClientOID: grid.ClientOID(bot.Name, px, side, len(rt.Orders)+1),
 	}
-	i, err := place(ctx, ex, rt, save, req)
+	i, err := place(ctx, ex, rt, save, req, true)
 	if err != nil {
 		return err
 	}

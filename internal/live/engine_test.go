@@ -20,10 +20,13 @@ type book struct {
 	placeErr func(exchangex.PlaceReq) (reached bool, err error)
 	noClose  bool // closes stay open
 	posErr   error
+	rules    exchangex.SymbolRules
 	n        int
 }
 
-func newBook(p float64) *book { return &book{price: p, orders: map[string]*exchangex.Order{}} }
+func newBook(p float64) *book {
+	return &book{price: p, orders: map[string]*exchangex.Order{}, rules: exchangex.SymbolRules{Tick: 0.01, Step: 0.001, MinQty: 0.001}}
+}
 
 func (b *book) Name() string   { return "fake" }
 func (b *book) Market() string { return "usdm" }
@@ -371,4 +374,74 @@ func TestLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	l2.Unlock()
+}
+
+func (b *book) Rules(context.Context, string) (exchangex.SymbolRules, error) {
+	return b.rules, nil
+}
+
+// Review N2: orders fit the tick and step; closes round toward a fill.
+func TestRoundToVenueFilters(t *testing.T) {
+	r := exchangex.SymbolRules{Tick: 0.1, Step: 0.01, MinQty: 0.01}
+	cases := []struct {
+		side     string
+		crossing bool
+		px, qty  float64
+		wantPx   float64
+		wantQty  float64
+	}{
+		{"buy", false, 95.27, 1.239, 95.2, 1.23},
+		{"sell", false, 95.21, 1.0, 95.3, 1.0},
+		{"sell", true, 95.29, 2.0, 95.2, 2.0},
+		{"buy", true, 95.21, 2.0, 95.3, 2.0},
+		{"buy", false, 0.3, 0.3, 0.3, 0.3}, // already on the grid despite float noise
+	}
+	for _, c := range cases {
+		got, err := roundReq(exchangex.PlaceReq{Side: c.side, Price: c.px, Qty: c.qty}, r, c.crossing)
+		if err != nil || got.Price != c.wantPx || got.Qty != c.wantQty {
+			t.Errorf("%+v -> %+v %v", c, got, err)
+		}
+	}
+	if _, err := roundReq(exchangex.PlaceReq{Side: "buy", Price: 1, Qty: 0.004}, r, false); err == nil {
+		t.Error("size below minimum accepted")
+	}
+}
+
+func TestNoRulesRefused(t *testing.T) {
+	if !errors.Is(CanRun(noRules{b: newBook(1)}), ErrNoRules) {
+		t.Fatal("driver without Rules accepted")
+	}
+}
+
+// noRules keeps OrderStatus but hides Rules.
+type noRules struct{ b *book }
+
+func (n noRules) Name() string   { return "x" }
+func (n noRules) Market() string { return "x" }
+func (n noRules) Ticker(ctx context.Context, s string) (exchangex.Ticker, error) {
+	return n.b.Ticker(ctx, s)
+}
+func (n noRules) Balances(ctx context.Context) ([]exchangex.Balance, error) {
+	return n.b.Balances(ctx)
+}
+func (n noRules) Positions(ctx context.Context) ([]exchangex.Position, error) {
+	return n.b.Positions(ctx)
+}
+func (n noRules) OpenOrders(ctx context.Context, s string) ([]exchangex.Order, error) {
+	return n.b.OpenOrders(ctx, s)
+}
+func (n noRules) PlaceOrder(ctx context.Context, r exchangex.PlaceReq) (exchangex.Order, error) {
+	return n.b.PlaceOrder(ctx, r)
+}
+func (n noRules) CancelOrder(ctx context.Context, s, id, cid string) error {
+	return n.b.CancelOrder(ctx, s, id, cid)
+}
+func (n noRules) SetLeverage(ctx context.Context, s string, l float64) error {
+	return n.b.SetLeverage(ctx, s, l)
+}
+func (n noRules) Permissions(ctx context.Context) (exchangex.Permissions, error) {
+	return n.b.Permissions(ctx)
+}
+func (n noRules) OrderStatus(ctx context.Context, s, id, cid string) (exchangex.Order, error) {
+	return n.b.OrderStatus(ctx, s, id, cid)
 }
