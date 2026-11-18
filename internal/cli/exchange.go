@@ -142,7 +142,7 @@ func exchangeTest(args []string) int {
 	if len(pos) < 1 {
 		return out.Fail("exchange.test", fmt.Errorf("usage: cuwan exchange test NAME"), 2)
 	}
-	ex, drv, err := openNamedExchange(pos[0], true)
+	ex, drv, err := openExchange(pos[0], true)
 	if err != nil {
 		return out.Fail("exchange.test", err, 1)
 	}

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sgnd/cuwan/internal/grid"
 	"github.com/sgnd/cuwan/internal/out"
 	"github.com/sgnd/cuwan/internal/risk"
 	"github.com/sgnd/cuwan/internal/store"
@@ -51,6 +52,9 @@ func botAdd(args []string) int {
 	if b.Exchange == "" || b.Symbol == "" || b.Lower == 0 || b.Upper == 0 || b.Levels == 0 {
 		return out.Fail("bot.add", fmt.Errorf("need --exchange --symbol --lower --upper --levels"), 2)
 	}
+	if err := validateBot(b); err != nil {
+		return out.Fail("bot.add", err, 2)
+	}
 	if b.Leverage > 0 {
 		lev, warn := risk.CapLeverage(b.Leverage)
 		b.Leverage = lev
@@ -64,6 +68,17 @@ func botAdd(args []string) int {
 	_ = store.AppendAudit("bot.add", map[string]any{"name": b.Name})
 	out.Print(os.Stdout, "bot.add", b, fmt.Sprintf("added bot %s (%s %s %.0f–%.0f x%d)", b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels))
 	return 0
+}
+
+// validateBot rejects a range the grid cannot build and negative sizes.
+func validateBot(b *store.Bot) error {
+	if _, err := grid.Build(b.Lower, b.Upper, b.Levels); err != nil {
+		return err
+	}
+	if b.OrderSize < 0 || b.QuoteAmount < 0 || b.Leverage < 0 {
+		return fmt.Errorf("--order-size, --quote-amount and --leverage must not be negative")
+	}
+	return nil
 }
 
 func applyBotFlags(b *store.Bot, args []string) error {
@@ -170,6 +185,9 @@ func botEdit(args []string) int {
 		return out.Fail("bot.edit", err, 1)
 	}
 	if err := applyBotFlags(b, args); err != nil {
+		return out.Fail("bot.edit", err, 2)
+	}
+	if err := validateBot(b); err != nil {
 		return out.Fail("bot.edit", err, 2)
 	}
 	if b.Leverage > 0 {

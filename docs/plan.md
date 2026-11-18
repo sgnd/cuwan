@@ -11,7 +11,7 @@ milestone M5 is done.
 | # | Milestone | Status |
 |---|---|---|
 | M1 | Safety and test harness | done |
-| M2 | Command tests for every verb | open |
+| M2 | Command tests for every verb | open (paper tests left) |
 | M3 | Live engine loop | open |
 | M4 | Venue drivers on testnets | open |
 | M5 | Release readiness | open |
@@ -30,12 +30,15 @@ milestone M5 is done.
 
 | Item | Status |
 |---|---|
-| Tests for `secret set/list/show/rename` (stdin only for agents, values hidden) | open |
-| Tests for `exchange add/list/venues/test` | open |
-| Tests for `bot add/list/show/edit/rm` and flag validation | open |
+| Tests for `secret set/list/show/rename` (stdin only for agents, values hidden) | done |
+| Tests for `exchange add/list/venues` | done |
+| Test for `exchange test` | open |
+| Tests for `bot add/list/show/edit/rm` and flag validation | done |
+| `bot add/edit` reject a range the grid cannot build and negative sizes | done |
 | Tests for `paper start/status/stop` with a fake public ticker | open |
-| Tests for `orders`, `positions`, `balance`, `audit`, `doctor`, `guide`, `schema` | open |
-| `cuwan schema` output checked against the real command list | open |
+| Tests for `orders`, `positions`, `balance`, `audit`, `doctor`, `guide`, `schema` | done |
+| Read commands use the `openExchange` seam (fakeable in tests) | done |
+| `cuwan schema` output checked against the real command list | done |
 
 ## M3: Live engine loop
 
