@@ -63,15 +63,14 @@ func TestNormStatus(t *testing.T) {
 
 func TestRulesFromMeta(t *testing.T) {
 	d, _ := info(t, map[string]any{
-		"meta":    map[string]any{"universe": []map[string]any{{"name": "BTC", "szDecimals": 5}, {"name": "DOGE", "szDecimals": 0}}},
-		"allMids": map[string]string{"BTC": "65000.5", "DOGE": "0.12345"},
+		"meta": map[string]any{"universe": []map[string]any{{"name": "BTC", "szDecimals": 5}, {"name": "DOGE", "szDecimals": 0}}},
 	})
 	r, err := d.Rules(context.Background(), "BTC")
-	if err != nil || r.Step != 1e-5 || r.Tick != 1 || r.MinNotional != 10 {
+	if err != nil || r.Step != 1e-5 || r.Tick != 0.1 || r.SigFigs != 5 || r.MinNotional != 10 {
 		t.Fatalf("BTC %+v %v", r, err)
 	}
 	r, err = d.Rules(context.Background(), "DOGE")
-	if err != nil || r.Step != 1 || r.Tick != 1e-5 { // 5 significant figures beat 6 decimals here
+	if err != nil || r.Step != 1 || r.Tick != 1e-6 {
 		t.Fatalf("DOGE %+v %v", r, err)
 	}
 	if _, err := d.Rules(context.Background(), "NOPE"); err == nil {

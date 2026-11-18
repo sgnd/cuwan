@@ -53,6 +53,10 @@ func runStart(args []string) int {
 		if err := live.CanRun(drv); err != nil {
 			return out.Fail("run.start", err, 1)
 		}
+		// A venue not yet proven end to end may only trade on its testnet.
+		if info, ok := exchangex.Lookup(exRec.Venue); !ok || (info.Live != "full" && !exRec.Testnet) {
+			return out.Fail("run.start", fmt.Errorf("venue %s is %q for live use; run it with --testnet until it is proven", exRec.Venue, info.Live), 1)
+		}
 		// Fail closed: a live run needs a key proven unable to withdraw.
 		perms, err := drv.Permissions(ctx)
 		if err != nil {

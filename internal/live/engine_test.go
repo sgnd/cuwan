@@ -654,3 +654,26 @@ func TestCancelAllCoversUnknown(t *testing.T) {
 		t.Fatalf("%+v", rt.Orders[0])
 	}
 }
+
+// Review #12, 2: with a significant-figure limit the tick follows the
+// order's own price, also across a power of ten.
+func TestTickFollowsOrderPrice(t *testing.T) {
+	r := exchangex.SymbolRules{Tick: 1e-6, SigFigs: 5, Step: 1, MinQty: 1}
+	cases := []struct {
+		side string
+		px   float64
+		want float64
+	}{
+		{"buy", 100.123, 100.12}, // 5 significant figures at 100
+		{"buy", 99.5123, 99.512}, // and at 99
+		{"sell", 99.99991, 100},  // rounding up crosses to 100
+		{"buy", 65000.7, 65000},
+		{"sell", 0.123456, 0.12346},
+	}
+	for _, c := range cases {
+		got, err := roundReq(exchangex.PlaceReq{Side: c.side, Price: c.px, Qty: 1}, r, false)
+		if err != nil || got.Price != c.want {
+			t.Errorf("%s %v -> %v (%v), want %v", c.side, c.px, got.Price, err, c.want)
+		}
+	}
+}

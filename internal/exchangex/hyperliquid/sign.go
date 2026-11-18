@@ -198,7 +198,12 @@ func newSigner(hexKey string) (*signer, error) {
 	if err != nil || len(b) != 32 {
 		return nil, fmt.Errorf("hyperliquid: the secret must be a 32-byte hex private key")
 	}
-	k := secp256k1.PrivKeyFromBytes(b)
+	// The key must be in [1, n-1]; PrivKeyFromBytes would reduce it silently.
+	var n secp256k1.ModNScalar
+	if overflow := n.SetByteSlice(b); overflow || n.IsZero() {
+		return nil, fmt.Errorf("hyperliquid: the secret is not a valid private key")
+	}
+	k := secp256k1.NewPrivateKey(&n)
 	pub := k.PubKey().SerializeUncompressed()
 	return &signer{key: k, addr: "0x" + hex.EncodeToString(keccak(pub[1:])[12:])}, nil
 }
@@ -220,6 +225,9 @@ func (s *signer) signL1(action omap, nonce uint64, mainnet bool) (Signature, err
 // floatToWire is the SDK's float_to_wire: 8 decimals, trailing zeros cut,
 // and an error when that would change the value.
 func floatToWire(x float64) (string, error) {
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return "", fmt.Errorf("hyperliquid: %v is not a number", x)
+	}
 	s := strconv.FormatFloat(x, 'f', 8, 64)
 	if r, _ := strconv.ParseFloat(s, 64); math.Abs(r-x) >= 1e-12 {
 		return "", fmt.Errorf("hyperliquid: %v needs more than 8 decimals", x)
@@ -233,6 +241,9 @@ func floatToWire(x float64) (string, error) {
 
 // orderWire is the SDK's order_request_to_order_wire for a limit order.
 func orderWire(asset int, buy bool, px, sz float64, reduceOnly bool, tif, cloid string) (omap, error) {
+	if !(px > 0) || !(sz > 0) {
+		return nil, fmt.Errorf("hyperliquid: price %v and size %v must be positive", px, sz)
+	}
 	p, err := floatToWire(px)
 	if err != nil {
 		return nil, err

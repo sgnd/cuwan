@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -201,5 +202,50 @@ func TestBadSecretRefused(t *testing.T) {
 	d.cfg.APISecret = "not-a-key"
 	if _, err := d.Permissions(context.Background()); err == nil {
 		t.Fatal("bad secret accepted")
+	}
+}
+
+// Review #12, 3: a partial fill is not "filled".
+func TestPartialFillStaysOpen(t *testing.T) {
+	v, d := newVenue(t)
+	v.reply = statuses(map[string]any{"filled": map[string]any{"oid": 5, "totalSz": "0.2"}})
+	o, err := d.PlaceOrder(context.Background(), exchangex.PlaceReq{Symbol: "BTC", Side: "buy", Price: 1, Qty: 0.5, IOC: true})
+	if err != nil || o.Status != "open" || o.Filled != 0.2 {
+		t.Fatalf("%+v %v", o, err)
+	}
+}
+
+func TestOddResponsesFail(t *testing.T) {
+	v, d := newVenue(t)
+	v.reply = statuses("waitingForFill")
+	if _, err := d.PlaceOrder(context.Background(), exchangex.PlaceReq{Symbol: "BTC", Side: "buy", Price: 1, Qty: 0.5}); err == nil {
+		t.Fatal("bare string status accepted as an order")
+	}
+	v.reply = func(map[string]any) any { return nil }
+	if _, err := d.PlaceOrder(context.Background(), exchangex.PlaceReq{Symbol: "BTC", Side: "buy", Price: 1, Qty: 0.5}); err == nil {
+		t.Fatal("missing data accepted")
+	}
+}
+
+func TestBadInputsRefused(t *testing.T) {
+	for _, x := range []float64{math.NaN(), math.Inf(1)} {
+		if _, err := floatToWire(x); err == nil {
+			t.Errorf("%v accepted", x)
+		}
+	}
+	for _, c := range [][2]float64{{0, 1}, {1, 0}, {-1, 1}, {1, -1}} {
+		if _, err := orderWire(0, true, c[0], c[1], false, "Gtc", ""); err == nil {
+			t.Errorf("price %v size %v accepted", c[0], c[1])
+		}
+	}
+	_, d := newVenue(t)
+	if err := d.SetLeverage(context.Background(), "BTC", 2.5); err == nil {
+		t.Error("fractional leverage accepted")
+	}
+	// Zero, and the group order n itself, are not valid keys.
+	for _, k := range []string{"0x" + strings.Repeat("00", 32), "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"} {
+		if _, err := newSigner(k); err == nil {
+			t.Errorf("key %s accepted", k)
+		}
 	}
 }

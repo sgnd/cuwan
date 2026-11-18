@@ -145,8 +145,8 @@ func (d *Driver) exchange(ctx context.Context, action omap, data any) error {
 	var inner struct {
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Response, &inner); err != nil {
-		return err
+	if err := json.Unmarshal(resp.Response, &inner); err != nil || len(inner.Data) == 0 {
+		return fmt.Errorf("hyperliquid: response without data: %s", truncate(resp.Response))
 	}
 	return json.Unmarshal(inner.Data, data)
 }
@@ -312,16 +312,7 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 		return exchangex.Order{}, err
 	}
 	var st struct {
-		Statuses []struct {
-			Resting *struct {
-				Oid int64 `json:"oid"`
-			} `json:"resting"`
-			Filled *struct {
-				Oid     int64  `json:"oid"`
-				TotalSz string `json:"totalSz"`
-			} `json:"filled"`
-			Error string `json:"error"`
-		} `json:"statuses"`
+		Statuses []json.RawMessage `json:"statuses"`
 	}
 	if err := d.exchange(ctx, omap{{"type", "order"}, {"orders", []any{w}}, {"grouping", "na"}}, &st); err != nil {
 		return exchangex.Order{}, err
@@ -329,17 +320,36 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 	if len(st.Statuses) != 1 {
 		return exchangex.Order{}, fmt.Errorf("hyperliquid: expected one order status, got %d", len(st.Statuses))
 	}
+	var r struct {
+		Resting *struct {
+			Oid int64 `json:"oid"`
+		} `json:"resting"`
+		Filled *struct {
+			Oid     int64  `json:"oid"`
+			TotalSz string `json:"totalSz"`
+		} `json:"filled"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(st.Statuses[0], &r); err != nil {
+		// A bare string such as "waitingForFill" carries no order ID.
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: unexpected order status %s", truncate(st.Statuses[0]))
+	}
 	o := exchangex.Order{ClientOID: req.ClientOID, Symbol: req.Symbol, Side: req.Side, Price: req.Price, Qty: req.Qty, ReduceOnly: req.ReduceOnly}
-	switch r := st.Statuses[0]; {
+	switch {
 	case r.Error != "":
 		return exchangex.Order{}, fmt.Errorf("hyperliquid: order rejected: %s", r.Error)
 	case r.Resting != nil:
 		o.ID, o.Status = strconv.FormatInt(r.Resting.Oid, 10), "open"
 	case r.Filled != nil:
-		o.ID, o.Status = strconv.FormatInt(r.Filled.Oid, 10), "filled"
+		o.ID = strconv.FormatInt(r.Filled.Oid, 10)
 		o.Filled, _ = strconv.ParseFloat(r.Filled.TotalSz, 64)
+		// Only a full fill is "filled"; the caller checks the rest by status.
+		o.Status = "open"
+		if o.Filled+1e-12 >= req.Qty {
+			o.Status = "filled"
+		}
 	default:
-		return exchangex.Order{}, fmt.Errorf("hyperliquid: unexpected order status")
+		return exchangex.Order{}, fmt.Errorf("hyperliquid: unexpected order status %s", truncate(st.Statuses[0]))
 	}
 	return o, nil
 }
@@ -395,6 +405,10 @@ func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) er
 	if err != nil {
 		return err
 	}
+	if lev < 1 || lev != math.Trunc(lev) {
+		return fmt.Errorf("hyperliquid: leverage must be a whole number, got %v", lev)
+	}
+	// cuwan uses cross margin; NetSize and the preventive close assume it.
 	return d.exchange(ctx, omap{{"type", "updateLeverage"}, {"asset", asset}, {"isCross", true}, {"leverage", int(lev)}}, nil)
 }
 
@@ -501,9 +515,8 @@ func normStatus(s string) string {
 // minOrderValue is Hyperliquid's minimum order value in USD.
 const minOrderValue = 10
 
-// Rules derives filters from meta. Size step is 10^-szDecimals. Prices allow
-// at most 5 significant figures and 6-szDecimals decimals, so the tick
-// depends on the price and is computed from the current mid on every call.
+// Rules derives filters from meta: size step 10^-szDecimals, prices with
+// at most 5 significant figures and 6-szDecimals decimals.
 func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRules, error) {
 	var meta struct {
 		Universe []struct {
@@ -518,27 +531,13 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 		if u.Name != symbol {
 			continue
 		}
-		t, err := d.Ticker(ctx, symbol)
-		if err != nil {
-			return exchangex.SymbolRules{}, err
-		}
 		step := math.Pow(10, -float64(u.SzDecimals))
 		return exchangex.SymbolRules{
-			Tick: tickFor(t.Price, u.SzDecimals), Step: step, MinQty: step, MinNotional: minOrderValue,
+			Tick: math.Pow(10, -float64(6-u.SzDecimals)), SigFigs: 5,
+			Step: step, MinQty: step, MinNotional: minOrderValue,
 		}, nil
 	}
 	return exchangex.SymbolRules{}, fmt.Errorf("hyperliquid: unknown coin %s", symbol)
-}
-
-// tickFor is the coarser of the decimals limit and the 5-significant-figure limit.
-func tickFor(price float64, szDecimals int) float64 {
-	tick := math.Pow(10, -float64(6-szDecimals))
-	if price > 0 {
-		if sig := math.Pow(10, math.Floor(math.Log10(price))-4); sig > tick {
-			tick = sig
-		}
-	}
-	return tick
 }
 
 func (d *Driver) postJSON(ctx context.Context, endpoint string, body any, dest any) error {
