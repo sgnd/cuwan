@@ -281,6 +281,9 @@ type RuntimeOrder struct {
 	Filled     float64 `json:"filled,omitempty"`
 	ReduceOnly bool    `json:"reduce_only,omitempty"`
 	Status     string  `json:"status"`
+	// SentAt and Misses track a pending order the venue did not know yet.
+	SentAt time.Time `json:"sent_at,omitempty"`
+	Misses int       `json:"misses,omitempty"`
 }
 
 func putJSON(typ, id string, v any) (string, error) {

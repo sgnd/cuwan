@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/store"
@@ -164,18 +165,51 @@ func TestTimedOutSendIsReconciled(t *testing.T) {
 	}
 }
 
-func TestSendThatNeverArrivedIsFailed(t *testing.T) {
+// Review N3: a missing order stays pending through the grace period, then fails.
+func TestSendThatNeverArrivedIsFailedAfterGrace(t *testing.T) {
+	clock := time.Now()
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = time.Now })
 	b := newBook(100)
 	rt, save, _ := start(t, b, gridBot)
-	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return false, errors.New("refused") }
+	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return false, errors.New("timeout") }
 	b.fill(t, "buy", 95)
 	_, _ = Step(context.Background(), gridBot, b, rt, save)
 	b.placeErr = nil
+	for i := 0; i < 3; i++ {
+		if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if countStatus(rt, StatusPending) != 1 {
+		t.Fatalf("failed before the grace period: %+v", rt.Orders[len(rt.Orders)-1])
+	}
+	clock = clock.Add(3 * time.Minute)
 	if _, err := Step(context.Background(), gridBot, b, rt, save); err != nil {
 		t.Fatal(err)
 	}
 	if countStatus(rt, StatusFailed) != 1 || countStatus(rt, StatusPending) != 0 {
+		t.Fatalf("%+v", rt.Orders[len(rt.Orders)-1])
+	}
+}
+
+// Review N3: a pending order that arrives late is cancelled by client ID on stop.
+func TestCancelAllCancelsPendingByClientID(t *testing.T) {
+	b := newBook(100)
+	rt, save, _ := start(t, b, gridBot)
+	b.placeErr = func(exchangex.PlaceReq) (bool, error) { return true, errors.New("timeout") }
+	b.fill(t, "buy", 95)
+	_, _ = Step(context.Background(), gridBot, b, rt, save) // refill reached the venue, kept pending
+	if err := CancelAll(context.Background(), gridBot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	if countStatus(rt, StatusPending) != 0 || countStatus(rt, StatusOpen) != 0 {
 		t.Fatalf("%+v", rt.Orders)
+	}
+	for _, o := range b.orders {
+		if o.Status == StatusOpen {
+			t.Fatalf("left on the book: %+v", o)
+		}
 	}
 }
 

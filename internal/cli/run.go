@@ -188,11 +188,8 @@ func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int
 
 // halt cancels what it can, marks the bot halted, and alerts a person.
 func halt(ctx context.Context, bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState, save live.Saver, reason string) int {
-	for i := range rt.Orders {
-		o := &rt.Orders[i]
-		if o.Status == live.StatusOpen && drv.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID) == nil {
-			o.Status = live.StatusCanceled
-		}
+	if err := live.CancelAll(ctx, bot, drv, rt, save); err != nil {
+		reason += "; cancelling also failed: " + err.Error()
 	}
 	rt.Status = "halted"
 	if rt.Meta == nil {
@@ -271,16 +268,8 @@ func runStop(args []string) int {
 			if err := live.Reconcile(ctx, bot, drv, rt, save); err != nil {
 				return out.Fail("run.stop", err, 1)
 			}
-			for i := range rt.Orders {
-				o := &rt.Orders[i]
-				if o.Status != live.StatusOpen {
-					continue
-				}
-				if err := drv.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID); err != nil {
-					_ = save()
-					return out.Fail("run.stop", fmt.Errorf("cancel %s: %w (bot left running; retry)", o.ClientOID, err), 1)
-				}
-				o.Status = live.StatusCanceled
+			if err := live.CancelAll(ctx, bot, drv, rt, save); err != nil {
+				return out.Fail("run.stop", fmt.Errorf("%w (bot left as is; retry)", err), 1)
 			}
 		}
 	}

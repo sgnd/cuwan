@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/grid"
@@ -39,6 +40,16 @@ const (
 
 // closeSlip makes the reduce-only close limit price cross the book.
 const closeSlip = 0.005
+
+// A pending order counts as never sent only after pendingMisses lookups
+// over at least pendingGrace.
+const (
+	pendingMisses = 3
+	pendingGrace  = 2 * time.Minute
+)
+
+// now is the clock; tests replace it.
+var now = time.Now
 
 // eps is the size below which a net position counts as flat.
 const eps = 1e-12
@@ -101,7 +112,7 @@ func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, s
 	}
 	rt.Orders = append(rt.Orders, store.RuntimeOrder{
 		ClientOID: req.ClientOID, Side: req.Side, Price: req.Price, Qty: req.Qty,
-		ReduceOnly: req.ReduceOnly, Status: StatusPending,
+		ReduceOnly: req.ReduceOnly, Status: StatusPending, SentAt: now(),
 	})
 	i := len(rt.Orders) - 1
 	if err := save(); err != nil {
@@ -154,7 +165,11 @@ func Reconcile(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 		}
 		got, err := st.OrderStatus(ctx, bot.Symbol, "", o.ClientOID)
 		if errors.Is(err, exchangex.ErrOrderNotFound) {
-			o.Status = StatusFailed
+			// Right after a timeout the venue may not know the order yet.
+			o.Misses++
+			if o.Misses >= pendingMisses && now().Sub(o.SentAt) >= pendingGrace {
+				o.Status = StatusFailed
+			}
 			changed = true
 			continue
 		}
@@ -352,26 +367,8 @@ func Flatten(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *sto
 	if err := Reconcile(ctx, bot, ex, rt, save); err != nil {
 		return err
 	}
-	for i := range rt.Orders {
-		o := &rt.Orders[i]
-		if o.Status != StatusOpen {
-			continue
-		}
-		if err := ex.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID); err != nil {
-			return fmt.Errorf("cancel %s: %w", o.ClientOID, err)
-		}
-		// A fill can land between the last step and the cancel.
-		got, err := st.OrderStatus(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
-		if err != nil {
-			return err
-		}
-		apply(o, got)
-		if o.Status == StatusOpen {
-			o.Status = StatusCanceled
-		}
-		if err := save(); err != nil {
-			return err
-		}
+	if err := CancelAll(ctx, bot, ex, rt, save); err != nil {
+		return err
 	}
 	if bot.Leverage > 0 {
 		if err := closeNet(ctx, bot, ex, st, rt, save); err != nil {
@@ -380,6 +377,41 @@ func Flatten(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *sto
 	}
 	rt.Status = "stopped"
 	return save()
+}
+
+// CancelAll cancels the bot's open and pending orders (pending ones by
+// client order ID) and records any fill that landed before the cancel.
+func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, save Saver) error {
+	st, err := statuser(ex)
+	if err != nil {
+		return err
+	}
+	for i := range rt.Orders {
+		o := &rt.Orders[i]
+		if o.Status != StatusOpen && o.Status != StatusPending {
+			continue
+		}
+		err := ex.CancelOrder(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
+		if err != nil && !errors.Is(err, exchangex.ErrOrderNotFound) {
+			return fmt.Errorf("cancel %s: %w", o.ClientOID, err)
+		}
+		got, err := st.OrderStatus(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
+		switch {
+		case errors.Is(err, exchangex.ErrOrderNotFound):
+			o.Status = StatusFailed // cancelled by client ID before it ever existed
+		case err != nil:
+			return err
+		default:
+			apply(o, got)
+			if o.Status == StatusOpen || o.Status == StatusPending {
+				o.Status = StatusCanceled
+			}
+		}
+		if err := save(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st OrderStatuser, rt *store.RuntimeState, save Saver) error {
