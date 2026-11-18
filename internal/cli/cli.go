@@ -57,6 +57,10 @@ func run(args []string) int {
 		return cmdBalance(args[1:])
 	case "audit":
 		return cmdAudit(args[1:])
+	case "export":
+		return cmdExport(args[1:])
+	case "import":
+		return cmdImport(args[1:])
 	case "help", "-h", "--help":
 		printRootHelp(os.Stdout)
 		return 0
@@ -80,6 +84,7 @@ BOTS         bot add|list|show|edit|rm · draft-range (stub)
 PAPER        paper start|status|stop
 LIVE         run start|status|stop
 READ         orders · positions · balance · audit
+BACKUP       export FILE [--with-audit] · import FILE [--dry-run] [--yes] (no secret values)
 
 Venues: live on binance; hyperliquid on testnet; other ids are catalog entries for paper.
 Paper uses public tickers where wired; secrets stay secret:NAME.

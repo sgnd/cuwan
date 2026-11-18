@@ -140,7 +140,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Local alerts on fill, stop, and preventive close (desktop notify, webhook the user sets) | open |
 | Agent access: MCP server or skill in `skills/` covering every command, with the same guardrails | open |
 | No telemetry: state it in README and `docs/design/principles.md`; a test that the CLI makes no call to a cuwan host | open |
-| Export and import of bots and history (no secrets) for backup and moving machines | open |
+| Export and import of bots and history (no secrets) for backup and moving machines | done: `cuwan export`, `cuwan import` |
 | Security review of vault, live run and drivers (security-audit skill) | open |
 
 ## M7: Paid apps (`efolusi/cuwan-apps`)
