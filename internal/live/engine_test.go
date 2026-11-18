@@ -13,16 +13,17 @@ import (
 
 // book is a fake venue keyed by client order ID.
 type book struct {
-	price    float64
-	orders   map[string]*exchangex.Order // every order the venue got
-	pos      []exchangex.Position
-	placed   []exchangex.PlaceReq
-	cancels  int
-	placeErr func(exchangex.PlaceReq) (reached bool, err error)
-	noClose  bool // closes stay open
-	posErr   error
-	rules    exchangex.SymbolRules
-	n        int
+	price     float64
+	orders    map[string]*exchangex.Order // every order the venue got
+	pos       []exchangex.Position
+	placed    []exchangex.PlaceReq
+	cancels   int
+	placeErr  func(exchangex.PlaceReq) (reached bool, err error)
+	noClose   bool    // closes fill nothing
+	closeFill float64 // fraction of each close that fills (default all)
+	posErr    error
+	rules     exchangex.SymbolRules
+	n         int
 }
 
 func newBook(p float64) *book {
@@ -58,8 +59,19 @@ func (b *book) PlaceOrder(_ context.Context, r exchangex.PlaceReq) (exchangex.Or
 	}
 	b.n++
 	o := &exchangex.Order{ID: fmt.Sprint(b.n), ClientOID: r.ClientOID, Side: r.Side, Price: r.Price, Qty: r.Qty, Status: StatusOpen, ReduceOnly: r.ReduceOnly}
-	if r.ReduceOnly && !b.noClose {
-		o.Status, o.Filled = StatusFilled, r.Qty
+	if r.ReduceOnly {
+		frac := 1.0
+		if b.noClose {
+			frac = 0
+		} else if b.closeFill > 0 {
+			frac = b.closeFill
+		}
+		o.Filled = r.Qty * frac
+		o.Status = StatusFilled
+		if frac < 1 {
+			o.Status = StatusCanceled // IOC: the rest is cancelled
+		}
+		b.shrink(o.Filled)
 	}
 	b.orders[r.ClientOID] = o
 	return *o, err
@@ -82,6 +94,18 @@ func (b *book) OrderStatus(_ context.Context, _, id, cid string) (exchangex.Orde
 		}
 	}
 	return exchangex.Order{}, fmt.Errorf("fake: %w", exchangex.ErrOrderNotFound)
+}
+
+// shrink reduces the first position by q, as a filled close would.
+func (b *book) shrink(q float64) {
+	if len(b.pos) == 0 {
+		return
+	}
+	if b.pos[0].Size > 0 {
+		b.pos[0].Size -= q
+	} else {
+		b.pos[0].Size += q
+	}
 }
 
 // fill fills the venue order at price px.
@@ -478,4 +502,64 @@ func (n noRules) Permissions(ctx context.Context) (exchangex.Permissions, error)
 }
 func (n noRules) OrderStatus(ctx context.Context, s, id, cid string) (exchangex.Order, error) {
 	return n.b.OrderStatus(ctx, s, id, cid)
+}
+
+// Review N5: closes are IOC, retried with fresh prices until the bot is flat.
+func TestCloseRetriesPartialIOC(t *testing.T) {
+	b := newBook(100)
+	bot := futBot()
+	rt, save, _ := start(t, b, bot)
+	b.fill(t, "buy", 95)
+	b.fill(t, "buy", 90)
+	if _, err := Step(context.Background(), bot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	b.pos = []exchangex.Position{{Symbol: "S", Side: "long", Size: 2, EntryPrice: 92}}
+	b.closeFill = 0.5
+	b.placed = nil
+	if err := Flatten(context.Background(), bot, b, rt, save); err == nil {
+		t.Fatal("0.5 + 0.5*... after 3 tries is not flat; want an error")
+	}
+	closes := 0
+	for _, p := range b.placed {
+		if p.ReduceOnly {
+			closes++
+			if !p.IOC {
+				t.Fatalf("close is not IOC: %+v", p)
+			}
+		}
+	}
+	if closes != closeAttempts {
+		t.Fatalf("closes %d", closes)
+	}
+}
+
+func TestCloseVerifiesVenuePosition(t *testing.T) {
+	b := newBook(100)
+	bot := futBot()
+	rt, save, _ := start(t, b, bot)
+	b.fill(t, "buy", 95)
+	if _, err := Step(context.Background(), bot, b, rt, save); err != nil {
+		t.Fatal(err)
+	}
+	b.pos = []exchangex.Position{{Symbol: "S", Side: "long", Size: 1, EntryPrice: 95}}
+	// The venue reports a fill but the position does not move.
+	b.closeFill = 1
+	orig := b.pos[0].Size
+	if err := Flatten(context.Background(), bot, noShrink{b}, rt, save); err == nil {
+		t.Fatal("position did not shrink; want an error")
+	}
+	if b.pos[0].Size != orig {
+		t.Fatal("noShrink should keep the position")
+	}
+}
+
+// noShrink reports fills but never moves the position.
+type noShrink struct{ *book }
+
+func (n noShrink) PlaceOrder(ctx context.Context, r exchangex.PlaceReq) (exchangex.Order, error) {
+	keep := append([]exchangex.Position(nil), n.pos...)
+	o, err := n.book.PlaceOrder(ctx, r)
+	n.pos = keep
+	return o, err
 }

@@ -414,44 +414,61 @@ func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 	return nil
 }
 
+// closeAttempts is how many IOC closes are tried, each with a wider price.
+const closeAttempts = 3
+
 func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st OrderStatuser, rt *store.RuntimeState, save Saver) error {
-	net := NetSize(rt)
-	if math.Abs(net) < eps {
+	start := NetSize(rt)
+	if math.Abs(start) < eps {
 		return nil
 	}
-	p, err := position(ctx, bot, ex)
+	before, err := position(ctx, bot, ex)
 	if err != nil {
 		return err
 	}
-	if p.Size*net <= 0 || math.Abs(p.Size)+eps < math.Abs(net) {
-		return fmt.Errorf("venue position %g on %s does not cover the bot's own size %g; close it by hand", p.Size, bot.Symbol, net)
+	if before.Size*start <= 0 || math.Abs(before.Size)+eps < math.Abs(start) {
+		return fmt.Errorf("venue position %g on %s does not cover the bot's own size %g; close it by hand", before.Size, bot.Symbol, start)
 	}
-	t, err := ex.Ticker(ctx, bot.Symbol) // fresh price for the close
+	for attempt := 1; attempt <= closeAttempts; attempt++ {
+		net := NetSize(rt)
+		if math.Abs(net) < eps {
+			break
+		}
+		t, err := ex.Ticker(ctx, bot.Symbol) // fresh price for every try
+		if err != nil {
+			return err
+		}
+		slip := closeSlip * float64(attempt)
+		side, px := "sell", t.Price*(1-slip)
+		if net < 0 {
+			side, px = "buy", t.Price*(1+slip)
+		}
+		req := exchangex.PlaceReq{
+			Symbol: bot.Symbol, Side: side, Price: px, Qty: math.Abs(net), ReduceOnly: true, IOC: true,
+			ClientOID: grid.ClientOID(bot.Name, px, side, len(rt.Orders)+1),
+		}
+		i, err := place(ctx, ex, rt, save, req, true)
+		if err != nil {
+			return err
+		}
+		got, err := st.OrderStatus(ctx, bot.Symbol, rt.Orders[i].ExchangeID, req.ClientOID)
+		if err != nil {
+			return err
+		}
+		apply(&rt.Orders[i], got) // an IOC ends filled or canceled, maybe partly filled
+		if err := save(); err != nil {
+			return err
+		}
+	}
+	if left := NetSize(rt); math.Abs(left) >= eps {
+		return fmt.Errorf("%g of %g still open after %d close tries; close it by hand", left, start, closeAttempts)
+	}
+	after, err := position(ctx, bot, ex)
 	if err != nil {
 		return err
 	}
-	side, px := "sell", t.Price*(1-closeSlip)
-	if net < 0 {
-		side, px = "buy", t.Price*(1+closeSlip)
-	}
-	req := exchangex.PlaceReq{
-		Symbol: bot.Symbol, Side: side, Price: px, Qty: math.Abs(net), ReduceOnly: true,
-		ClientOID: grid.ClientOID(bot.Name, px, side, len(rt.Orders)+1),
-	}
-	i, err := place(ctx, ex, rt, save, req, true)
-	if err != nil {
-		return err
-	}
-	got, err := st.OrderStatus(ctx, bot.Symbol, rt.Orders[i].ExchangeID, req.ClientOID)
-	if err != nil {
-		return err
-	}
-	apply(&rt.Orders[i], got)
-	if err := save(); err != nil {
-		return err
-	}
-	if rt.Orders[i].Status != StatusFilled {
-		return fmt.Errorf("close order %s is %s, not filled; check the venue", req.ClientOID, rt.Orders[i].Status)
+	if math.Abs(before.Size)-math.Abs(after.Size)+eps < math.Abs(start) {
+		return fmt.Errorf("venue position went from %g to %g, not down by the bot's %g; check the venue", before.Size, after.Size, start)
 	}
 	return nil
 }

@@ -122,6 +122,8 @@ type PlaceReq struct {
 	ClientOID  string
 	ReduceOnly bool
 	PostOnly   bool
+	// IOC fills what it can at once and cancels the rest.
+	IOC bool
 }
 
 // Permissions describes API key capabilities.
