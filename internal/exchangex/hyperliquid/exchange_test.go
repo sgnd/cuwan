@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 
@@ -247,5 +248,38 @@ func TestBadInputsRefused(t *testing.T) {
 		if _, err := newSigner(k); err == nil {
 			t.Errorf("key %s accepted", k)
 		}
+	}
+}
+
+// A clock that steps back across a restart never reuses a saved nonce.
+func TestNonceSurvivesRestart(t *testing.T) {
+	path := t.TempDir() + "/nonce"
+	future := uint64(time.Now().Add(time.Hour).UnixMilli())
+	if err := saveNonce(path, future); err != nil {
+		t.Fatal(err)
+	}
+	d := &Driver{noncePath: path} // a new process after the clock stepped back
+	n, err := d.nonce()
+	if err != nil || n != future+1 {
+		t.Fatalf("nonce %d (%v), want %d", n, err, future+1)
+	}
+	if loadNonce(path) != n {
+		t.Fatalf("saved %d, want %d", loadNonce(path), n)
+	}
+}
+
+func TestOpenKeepsNoncePerAddressAndNetwork(t *testing.T) {
+	t.Setenv("CUWAN_HOME", t.TempDir())
+	ex, err := Open(exchangex.Config{APIKey: account, APISecret: testKey, Testnet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sg, _ := newSigner(testKey)
+	if p := ex.(*Driver).noncePath; !strings.HasSuffix(p, "hyperliquid-nonce-testnet-"+sg.addr) {
+		t.Fatalf("path %s", p)
+	}
+	paper, _ := Open(exchangex.Config{Paper: true})
+	if paper.(*Driver).noncePath != "" {
+		t.Fatal("paper driver keeps a nonce file")
 	}
 }

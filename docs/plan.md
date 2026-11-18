@@ -111,7 +111,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Review of PR #12, 2: Hyperliquid tick came from the mid, not the order price | done: tick follows each order's price (5 significant figures) |
 | Review of PR #12, 3: a partial fill was reported as filled | done: only a full fill is `filled` |
 | Review of PR #12, low: NaN/Inf and non-positive price or size; fractional leverage; zero or out-of-range key; bare-string status; missing response data; `exchange test` ignored a permissions error | done |
-| Hyperliquid nonce can go back if the clock steps back across a restart | open: store the last nonce, or wait until the clock passes it |
+| Hyperliquid nonce can go back if the clock steps back across a restart | done: the last nonce is saved per signer and network under `~/.cuwan` before use |
 | Check the SDK test vectors against the SDK source (reviewer could not) | open: vectors copied from hyperliquid-python-sdk tests/signing_test.py; a second person should compare |
 | Confirm the real `userRole` response shape on testnet | open: waits on the Hyperliquid testnet round trip |
 | Confirm an API wallet cannot sign fund-moving actions | open: Hyperliquid docs say withdrawals need the account key; check on testnet |

@@ -11,12 +11,14 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
+	"github.com/sgnd/cuwan/internal/home"
 )
 
 func init() {
@@ -39,12 +41,27 @@ func Open(cfg exchangex.Config) (exchangex.Exchange, error) {
 	if cfg.Testnet {
 		info, exch = testnetInfo, testnetExchange
 	}
-	return &Driver{
+	d := &Driver{
 		cfg:     cfg,
 		infoURL: info,
 		exchURL: exch,
 		client:  &http.Client{Timeout: 15 * time.Second},
-	}, nil
+	}
+	if !cfg.Paper && cfg.APISecret != "" {
+		if sg, err := newSigner(cfg.APISecret); err == nil {
+			net := "mainnet"
+			if cfg.Testnet {
+				net = "testnet"
+			}
+			if _, err := home.Ensure(); err != nil {
+				return nil, err
+			}
+			if d.noncePath, err = home.Path("hyperliquid-nonce-" + net + "-" + sg.addr); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return d, nil
 }
 
 // Driver talks to Hyperliquid.
@@ -57,7 +74,11 @@ type Driver struct {
 	mu        sync.Mutex
 	assets    map[string]int // coin -> index in meta.universe
 	lastNonce uint64
-	sg        *signer
+	// noncePath keeps the last nonce across restarts; one file per signer
+	// address and network, set by Open.
+	noncePath   string
+	nonceLoaded bool
+	sg          *signer
 }
 
 // wallet returns the signer for the secret key.
@@ -106,15 +127,48 @@ func (d *Driver) asset(ctx context.Context, coin string) (int, error) {
 }
 
 // nonce is the time in ms, strictly increasing within this driver.
-func (d *Driver) nonce() uint64 {
+func (d *Driver) nonce() (uint64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if !d.nonceLoaded {
+		d.lastNonce = loadNonce(d.noncePath)
+		d.nonceLoaded = true
+	}
 	n := uint64(time.Now().UnixMilli())
 	if n <= d.lastNonce {
 		n = d.lastNonce + 1
 	}
+	// Saved before use, so a clock that steps back across a restart never
+	// reuses a nonce the venue has already seen.
+	if err := saveNonce(d.noncePath, n); err != nil {
+		return 0, fmt.Errorf("hyperliquid: save nonce: %w", err)
+	}
 	d.lastNonce = n
+	return n, nil
+}
+
+// loadNonce reads the last saved nonce; a missing or bad file counts as 0.
+func loadNonce(path string) uint64 {
+	if path == "" {
+		return 0
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 	return n
+}
+
+func saveNonce(path string, n uint64) error {
+	if path == "" {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(n, 10)+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // exchange signs and posts an L1 action, then decodes response.data.
@@ -123,7 +177,10 @@ func (d *Driver) exchange(ctx context.Context, action omap, data any) error {
 	if err != nil {
 		return err
 	}
-	n := d.nonce()
+	n, err := d.nonce()
+	if err != nil {
+		return err
+	}
 	sig, err := sg.signL1(action, n, !d.cfg.Testnet)
 	if err != nil {
 		return err
