@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
@@ -62,6 +63,9 @@ func futuresBase(testnet bool) string {
 // codeNoSuchOrder is Binance's "Order does not exist." error code.
 const codeNoSuchOrder = -2013
 
+// codeUnknownOrder is Binance's "Unknown order sent." (cancel of a missing order).
+const codeUnknownOrder = -2011
+
 // Driver talks to Binance REST.
 type Driver struct {
 	cfg    exchangex.Config
@@ -70,6 +74,9 @@ type Driver struct {
 	client *http.Client
 	// sapiBase overrides the /sapi host in tests.
 	sapiBase string
+
+	rulesMu sync.Mutex
+	rules   map[string]exchangex.SymbolRules
 }
 
 func (d *Driver) Name() string   { return "binance" }
@@ -154,12 +161,18 @@ func (d *Driver) Positions(ctx context.Context) ([]exchangex.Position, error) {
 		Leverage         string `json:"leverage"`
 		LiquidationPrice string `json:"liquidationPrice"`
 		UnrealizedProfit string `json:"unRealizedProfit"`
+		PositionSide     string `json:"positionSide"`
 	}
 	if err := d.signed(ctx, http.MethodGet, "/fapi/v2/positionRisk", nil, &raw); err != nil {
 		return nil, err
 	}
 	var out []exchangex.Position
 	for _, r := range raw {
+		// Hedge mode splits a symbol into LONG and SHORT legs; cuwan's
+		// net-size checks need one-way mode.
+		if r.PositionSide != "" && r.PositionSide != "BOTH" {
+			return nil, fmt.Errorf("binance: hedge mode (positionSide %s) is not supported; switch the account to one-way mode", r.PositionSide)
+		}
 		size, _ := strconv.ParseFloat(r.PositionAmt, 64)
 		if size == 0 {
 			continue
@@ -233,6 +246,9 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 		"quantity":         {formatFloat(req.Qty)},
 		"price":            {formatFloat(req.Price)},
 		"newClientOrderId": {req.ClientOID},
+	}
+	if req.IOC {
+		q.Set("timeInForce", "IOC")
 	}
 	path := "/api/v3/order"
 	if d.market == exchangex.MarketUSDM {
@@ -331,6 +347,58 @@ func (d *Driver) restrictionsBase() string {
 		return d.sapiBase
 	}
 	return spotBase(false)
+}
+
+// Rules reads the symbol's PRICE_FILTER and LOT_SIZE from exchangeInfo and
+// caches them for the life of the driver.
+func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRules, error) {
+	d.rulesMu.Lock()
+	defer d.rulesMu.Unlock()
+	if r, ok := d.rules[symbol]; ok {
+		return r, nil
+	}
+	path, q := "/api/v3/exchangeInfo", url.Values{"symbol": {symbol}}
+	if d.market == exchangex.MarketUSDM {
+		path, q = "/fapi/v1/exchangeInfo", nil // no per-symbol filter here
+	}
+	var raw struct {
+		Symbols []struct {
+			Symbol  string `json:"symbol"`
+			Filters []struct {
+				Type     string `json:"filterType"`
+				TickSize string `json:"tickSize"`
+				StepSize string `json:"stepSize"`
+				MinQty   string `json:"minQty"`
+			} `json:"filters"`
+		} `json:"symbols"`
+	}
+	if err := d.getPublic(ctx, path, q, &raw); err != nil {
+		return exchangex.SymbolRules{}, err
+	}
+	for _, sym := range raw.Symbols {
+		if sym.Symbol != symbol {
+			continue
+		}
+		var r exchangex.SymbolRules
+		for _, f := range sym.Filters {
+			switch f.Type {
+			case "PRICE_FILTER":
+				r.Tick, _ = strconv.ParseFloat(f.TickSize, 64)
+			case "LOT_SIZE":
+				r.Step, _ = strconv.ParseFloat(f.StepSize, 64)
+				r.MinQty, _ = strconv.ParseFloat(f.MinQty, 64)
+			}
+		}
+		if r.Tick <= 0 || r.Step <= 0 {
+			return exchangex.SymbolRules{}, fmt.Errorf("binance: %s has no PRICE_FILTER or LOT_SIZE", symbol)
+		}
+		if d.rules == nil {
+			d.rules = map[string]exchangex.SymbolRules{}
+		}
+		d.rules[symbol] = r
+		return r, nil
+	}
+	return exchangex.SymbolRules{}, fmt.Errorf("binance: unknown symbol %s", symbol)
 }
 
 // OrderStatus reports one order by exchange ID or client order ID.
@@ -446,7 +514,7 @@ func (d *Driver) signedAt(ctx context.Context, base, method, path string, q url.
 		var e struct {
 			Code int `json:"code"`
 		}
-		if json.Unmarshal(body, &e) == nil && e.Code == codeNoSuchOrder {
+		if json.Unmarshal(body, &e) == nil && (e.Code == codeNoSuchOrder || e.Code == codeUnknownOrder) {
 			return fmt.Errorf("binance: %w", exchangex.ErrOrderNotFound)
 		}
 		return fmt.Errorf("binance: %s: %s", resp.Status, truncate(body))
