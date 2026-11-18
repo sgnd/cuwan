@@ -55,6 +55,7 @@ func setup(t *testing.T, fx *fakeEx) {
 	t.Setenv("CUWAN_KEYCHAIN", "off")
 	t.Setenv("CUWAN_AGENT", "1")
 	store.ResetForTest()
+	prevKS := store.KeySource
 	store.KeySource = func(map[string]string, bool) ([]byte, map[string]string, error) {
 		k := make([]byte, 32)
 		for i := range k {
@@ -70,7 +71,7 @@ func setup(t *testing.T, fx *fakeEx) {
 	t.Cleanup(func() {
 		openExchange = prev
 		store.ResetForTest()
-		store.KeySource = nil
+		store.KeySource = prevKS
 	})
 	if err := store.PutExchange(&store.Exchange{Name: "fx", Venue: "binance", Market: "usdm", SecretRef: "secret:x"}); err != nil {
 		t.Fatal(err)
@@ -78,6 +79,17 @@ func setup(t *testing.T, fx *fakeEx) {
 	if err := store.PutBot(&store.Bot{Name: "g", Exchange: "fx", Symbol: "BTCUSDT", Lower: 90, Upper: 110, Levels: 4, OrderSize: 0.01, Leverage: 50}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// callIn is call with stdin set to in.
+func callIn(t *testing.T, in string, args ...string) (int, out.Envelope) {
+	t.Helper()
+	r, w, _ := os.Pipe()
+	old := os.Stdin
+	os.Stdin = r
+	go func() { w.WriteString(in); w.Close() }()
+	defer func() { os.Stdin = old }()
+	return call(t, args...)
 }
 
 // call runs cuwan with args and decodes the JSON envelope from stdout.

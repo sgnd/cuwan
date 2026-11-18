@@ -6,15 +6,33 @@ The one list of planned work for the cuwan CLI. Mark an item `done` or
 The paid plan (`efolusi/cuwan-apps`, `efolusi/cuwan-cloud`) starts only after
 milestone M5 is done.
 
+## Product goal
+
+cuwan brings the hosted grid bot (the premium feature of 3Commas, Pionex
+and similar services) to the user's own machine, for people and AI agents.
+It follows komando: open-source CLI first, then paid apps and a paid cloud.
+
+| Value | What it means for cuwan | Where |
+|---|---|---|
+| Open source, for transparency | Every order decision is in the public CLI; no hidden engine | M1 to M5 |
+| Self-hosted, for ownership | Bots, keys and history live in `~/.cuwan`; runs with no cuwan server | M3, M6 |
+| Private, for protection | No telemetry; keys never leave the machine; cloud sync is end-to-end encrypted | M6, M8 |
+| Secure, for trust | Sealed vault, trade-only keys, person confirm for live orders, risk caps | M1, M3, M6 |
+| Cloud, for convenience | Optional paid sync, alerts and an always-on runner | M8 |
+| Commercial, for sustainability | Paid apps and cloud; the CLI stays free | M7, M8 |
+
 ## Milestones
 
 | # | Milestone | Status |
 |---|---|---|
 | M1 | Safety and test harness | done |
-| M2 | Command tests for every verb | open |
+| M2 | Command tests for every verb | done |
 | M3 | Live engine loop | open |
 | M4 | Venue drivers on testnets | open |
 | M5 | Release readiness | open |
+| M6 | Killer features and trust | open |
+| M7 | Paid apps (`efolusi/cuwan-apps`) | open: starts after M5 |
+| M8 | Paid cloud (`efolusi/cuwan-cloud`) | open: starts after M5 |
 
 ## M1: Safety and test harness
 
@@ -30,12 +48,17 @@ milestone M5 is done.
 
 | Item | Status |
 |---|---|
-| Tests for `secret set/list/show/rename` (stdin only for agents, values hidden) | open |
-| Tests for `exchange add/list/venues/test` | open |
-| Tests for `bot add/list/show/edit/rm` and flag validation | open |
-| Tests for `paper start/status/stop` with a fake public ticker | open |
-| Tests for `orders`, `positions`, `balance`, `audit`, `doctor`, `guide`, `schema` | open |
-| `cuwan schema` output checked against the real command list | open |
+| Tests for `secret set/list/show/rename` (stdin only for agents, values hidden) | done |
+| Tests for `exchange add/list/venues` | done |
+| Test for `exchange test` | done |
+| Tests for `bot add/list/show/edit/rm` and flag validation | done |
+| `bot add/edit` reject a range the grid cannot build and negative sizes | done |
+| Tests for `paper start/status/stop` with a fake public ticker | done |
+| Paper engine: opposite order goes one grid level away (was the same price, so it refilled every tick) | done |
+| Detached paper worker end-to-end test (spawns a process) | open |
+| Tests for `orders`, `positions`, `balance`, `audit`, `doctor`, `guide`, `schema` | done |
+| Read commands use the `openExchange` seam (fakeable in tests) | done |
+| `cuwan schema` output checked against the real command list | done |
 
 ## M3: Live engine loop
 
@@ -66,3 +89,33 @@ milestone M5 is done.
 | Release workflow (GoReleaser, checksums), like komando | open |
 | README and `docs/` updated for every command | open |
 | `make security` (govulncheck) in CI | open |
+
+## M6: Killer features and trust
+
+| Item | Status |
+|---|---|
+| Backtest a grid on public historical candles before running it | open |
+| Paper vs live profit report (realised, unrealised, fees) per bot | open |
+| Local alerts on fill, stop, and preventive close (desktop notify, webhook the user sets) | open |
+| Agent access: MCP server or skill in `skills/` covering every command, with the same guardrails | open |
+| No telemetry: state it in README and `docs/design/principles.md`; a test that the CLI makes no call to a cuwan host | open |
+| Export and import of bots and history (no secrets) for backup and moving machines | open |
+| Security review of vault, live run and drivers (security-audit skill) | open |
+
+## M7: Paid apps (`efolusi/cuwan-apps`)
+
+Follows how `efolusi/komando-apps` is built. Starts after M5.
+
+| Item | Status |
+|---|---|
+| Mac, iPhone and iPad app that drives the local CLI: bots, paper, live status, alerts | deferred: waits on M5 |
+
+## M8: Paid cloud (`efolusi/cuwan-cloud`)
+
+Follows how `efolusi/komando-cloud` is built. Starts after M5.
+
+| Item | Status |
+|---|---|
+| Account, billing and website | deferred: waits on M5 |
+| End-to-end encrypted sync of bots and history (no exchange keys in the cloud) | deferred: waits on M5 |
+| Optional always-on runner and push alerts | deferred: waits on M5; needs a design for keys that never leave the user's control |

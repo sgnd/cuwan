@@ -15,7 +15,7 @@ func cmdOrders(args []string) int {
 	if len(pos) < 1 {
 		return out.Fail("orders", fmt.Errorf("usage: cuwan orders EXCHANGE [--symbol SYM]"), 2)
 	}
-	_, drv, err := openNamedExchange(pos[0], false)
+	_, drv, err := openExchange(pos[0], false)
 	if err != nil {
 		// try paper/public — still need creds for open orders; show runtime instead
 		if rt, rerr := store.GetRuntime(pos[0]); rerr == nil {
@@ -46,7 +46,7 @@ func cmdPositions(args []string) int {
 	if len(pos) < 1 {
 		return out.Fail("positions", fmt.Errorf("usage: cuwan positions EXCHANGE"), 2)
 	}
-	_, drv, err := openNamedExchange(pos[0], false)
+	_, drv, err := openExchange(pos[0], false)
 	if err != nil {
 		return out.Fail("positions", err, 1)
 	}
@@ -71,7 +71,7 @@ func cmdBalance(args []string) int {
 	if len(pos) < 1 {
 		return out.Fail("balance", fmt.Errorf("usage: cuwan balance EXCHANGE"), 2)
 	}
-	_, drv, err := openNamedExchange(pos[0], false)
+	_, drv, err := openExchange(pos[0], false)
 	if err != nil {
 		return out.Fail("balance", err, 1)
 	}
