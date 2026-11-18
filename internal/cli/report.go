@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/sgnd/cuwan/internal/out"
@@ -44,19 +42,6 @@ func cmdReport(args []string) int {
 	}
 	out.Print(os.Stdout, "report", reps, reportText(reps, rate))
 	return 0
-}
-
-// parseFee accepts "0.1%" or a fraction such as "0.001".
-func parseFee(s string) (float64, error) {
-	pct := strings.HasSuffix(s, "%")
-	f, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
-	if err != nil || f < 0 {
-		return 0, errors.New("--fee must be a rate such as 0.1% or 0.001")
-	}
-	if pct {
-		f /= 100
-	}
-	return f, nil
 }
 
 func reportText(reps []report.Report, rate float64) string {
