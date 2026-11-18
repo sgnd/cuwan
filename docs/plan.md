@@ -129,7 +129,7 @@ It follows komando: open-source CLI first, then paid apps and a paid cloud.
 | Release workflow (GoReleaser, checksums), like komando | open |
 | README and `docs/` updated for every command | open |
 | `make security` (govulncheck) in CI | open |
-| Go toolchain bump in `go.mod` once a release fixes GO-2026-6859 (`net/http`) | open |
+| Go toolchain bump in `go.mod` once a release fixes GO-2026-6859 (`net/http`) | done, no bump needed: govulncheck finds nothing under go1.26.11 (pinned in `go.mod`, used by CI) or go1.27.4; only a local go1.27.3 was affected |
 
 ## M6: Killer features and trust
 
