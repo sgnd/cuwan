@@ -1,4 +1,5 @@
-// Package hyperliquid implements Hyperliquid perps (info + signed trading stub).
+// Package hyperliquid implements Hyperliquid perps: market data, signed
+// orders, cancels and leverage, order status and symbol rules.
 package hyperliquid
 
 import (
@@ -21,11 +22,6 @@ import (
 
 func init() {
 	exchangex.Register("hyperliquid", Open)
-	exchangex.RegisterMeta(exchangex.VenueInfo{
-		ID: "hyperliquid", Kind: exchangex.KindDEX,
-		Markets: []string{exchangex.MarketPerp},
-		Backend: exchangex.BackendNative, PublicTicker: true, Live: "paper-only",
-	}, Open)
 }
 
 const mainnetInfo = "https://api.hyperliquid.xyz/info"
@@ -180,8 +176,43 @@ func (d *Driver) Ticker(ctx context.Context, symbol string) (exchangex.Ticker, e
 	return exchangex.Ticker{Symbol: symbol, Price: px, Time: time.Now().UTC()}, nil
 }
 
+// MarkPrice is the perp's mark price, from metaAndAssetCtxs.
+func (d *Driver) MarkPrice(ctx context.Context, symbol string) (float64, error) {
+	var raw []json.RawMessage
+	if err := d.postJSON(ctx, d.infoURL, map[string]any{"type": "metaAndAssetCtxs"}, &raw); err != nil {
+		return 0, err
+	}
+	if len(raw) != 2 {
+		return 0, fmt.Errorf("hyperliquid: unexpected metaAndAssetCtxs answer")
+	}
+	var meta struct {
+		Universe []struct {
+			Name string `json:"name"`
+		} `json:"universe"`
+	}
+	var ctxs []struct {
+		MarkPx string `json:"markPx"`
+	}
+	if err := json.Unmarshal(raw[0], &meta); err != nil {
+		return 0, err
+	}
+	if err := json.Unmarshal(raw[1], &ctxs); err != nil {
+		return 0, err
+	}
+	for i, u := range meta.Universe {
+		if u.Name == symbol && i < len(ctxs) {
+			px, err := strconv.ParseFloat(ctxs[i].MarkPx, 64)
+			if err != nil || px <= 0 || math.IsNaN(px) {
+				return 0, fmt.Errorf("hyperliquid: bad mark price for %s", symbol)
+			}
+			return px, nil
+		}
+	}
+	return 0, fmt.Errorf("hyperliquid: unknown coin %s", symbol)
+}
+
 func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
-	if d.cfg.Paper || d.cfg.APIKey == "" {
+	if d.cfg.APIKey == "" {
 		return nil, fmt.Errorf("hyperliquid: balances need wallet address (APIKey)")
 	}
 	body := map[string]any{
@@ -203,7 +234,7 @@ func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
 }
 
 func (d *Driver) Positions(ctx context.Context) ([]exchangex.Position, error) {
-	if d.cfg.Paper || d.cfg.APIKey == "" {
+	if d.cfg.APIKey == "" {
 		return nil, nil
 	}
 	body := map[string]any{
@@ -254,7 +285,7 @@ func (d *Driver) Positions(ctx context.Context) ([]exchangex.Position, error) {
 }
 
 func (d *Driver) OpenOrders(ctx context.Context, symbol string) ([]exchangex.Order, error) {
-	if d.cfg.Paper || d.cfg.APIKey == "" {
+	if d.cfg.APIKey == "" {
 		return nil, nil
 	}
 	body := map[string]any{"type": "openOrders", "user": d.cfg.APIKey}
@@ -289,19 +320,13 @@ func (d *Driver) OpenOrders(ctx context.Context, symbol string) ([]exchangex.Ord
 }
 
 func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchangex.Order, error) {
-	if d.cfg.Paper {
-		return exchangex.Order{}, fmt.Errorf("hyperliquid: paper mode refuses signed PlaceOrder")
-	}
 	asset, err := d.asset(ctx, req.Symbol)
 	if err != nil {
 		return exchangex.Order{}, err
 	}
 	tif := "Gtc"
-	switch {
-	case req.IOC:
+	if req.IOC {
 		tif = "Ioc"
-	case req.PostOnly:
-		tif = "Alo"
 	}
 	cloid := ""
 	if req.ClientOID != "" {
@@ -356,9 +381,6 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 
 // CancelOrder cancels by oid, or by the cloid made from the client order ID.
 func (d *Driver) CancelOrder(ctx context.Context, symbol, orderID, clientOID string) error {
-	if d.cfg.Paper {
-		return fmt.Errorf("hyperliquid: paper mode refuses signed CancelOrder")
-	}
 	asset, err := d.asset(ctx, symbol)
 	if err != nil {
 		return err
@@ -398,9 +420,6 @@ func (d *Driver) CancelOrder(ctx context.Context, symbol, orderID, clientOID str
 
 // SetLeverage sets cross leverage for the coin.
 func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) error {
-	if d.cfg.Paper {
-		return nil
-	}
 	asset, err := d.asset(ctx, symbol)
 	if err != nil {
 		return err
@@ -416,8 +435,8 @@ func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) er
 // An API wallet can trade but cannot withdraw; the account's own key can.
 // Anything else fails closed.
 func (d *Driver) Permissions(ctx context.Context) (exchangex.Permissions, error) {
-	if d.cfg.Paper || d.cfg.APISecret == "" {
-		return exchangex.Permissions{CanRead: true}, nil
+	if d.cfg.APISecret == "" {
+		return exchangex.Permissions{}, fmt.Errorf("hyperliquid: no API wallet key, so its permissions cannot be checked")
 	}
 	sg, err := d.wallet()
 	if err != nil {
@@ -552,22 +571,30 @@ func (d *Driver) postJSON(ctx context.Context, endpoint string, body any, dest a
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return err
+		return d.clean(err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return err
+		return d.clean(err)
 	}
 	if resp.StatusCode >= 300 {
 		s := string(raw)
 		if len(s) > 200 {
 			s = s[:200] + "…"
 		}
-		return fmt.Errorf("hyperliquid: %s: %s", resp.Status, s)
+		return d.clean(fmt.Errorf("hyperliquid: %s: %s", resp.Status, s))
 	}
 	if dest == nil {
 		return nil
 	}
 	return json.Unmarshal(raw, dest)
+}
+
+// maxBody caps an answer read into memory.
+const maxBody = 8 << 20
+
+// clean removes the private key, with or without 0x, from err.
+func (d *Driver) clean(err error) error {
+	return exchangex.CleanErr(err, d.cfg.APISecret, strings.TrimPrefix(d.cfg.APISecret, "0x"))
 }
