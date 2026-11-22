@@ -120,6 +120,8 @@ type SymbolRules struct {
 	// SigFigs, when set, limits prices to that many significant figures
 	// (Hyperliquid).
 	SigFigs int
+	// Base is the asset bought by a buy order (BTC in BTCUSDT).
+	Base string
 }
 
 // Permissions describes what an API key may do.

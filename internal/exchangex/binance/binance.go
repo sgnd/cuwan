@@ -363,8 +363,9 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 	}
 	var raw struct {
 		Symbols []struct {
-			Symbol  string `json:"symbol"`
-			Filters []struct {
+			Symbol    string `json:"symbol"`
+			BaseAsset string `json:"baseAsset"`
+			Filters   []struct {
 				Type     string `json:"filterType"`
 				TickSize string `json:"tickSize"`
 				StepSize string `json:"stepSize"`
@@ -382,7 +383,7 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 		if sym.Symbol != symbol {
 			continue
 		}
-		var r exchangex.SymbolRules
+		r := exchangex.SymbolRules{Base: sym.BaseAsset}
 		for _, f := range sym.Filters {
 			switch f.Type {
 			case "PRICE_FILTER":

@@ -553,7 +553,7 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 		step := math.Pow(10, -float64(u.SzDecimals))
 		return exchangex.SymbolRules{
 			Tick: math.Pow(10, -float64(6-u.SzDecimals)), SigFigs: 5,
-			Step: step, MinQty: step, MinNotional: minOrderValue,
+			Step: step, MinQty: step, MinNotional: minOrderValue, Base: symbol,
 		}, nil
 	}
 	return exchangex.SymbolRules{}, fmt.Errorf("hyperliquid: unknown coin %s", symbol)
