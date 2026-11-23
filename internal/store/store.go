@@ -122,7 +122,7 @@ func Open(dir string, master []byte) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- a folder needs the x bit; 0700 is owner only
 		return nil, err
 	}
 	return &Store{dir: dir, key: key}, nil

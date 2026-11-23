@@ -35,18 +35,16 @@ dist: ## Build release archives and checksums for macOS and Linux into ./dist
 	rm -rf dist && mkdir -p dist
 	@for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; name=cuwan_$${os}_$${arch}; \
-	  exe=cuwan; [ $$os = windows ] && exe=cuwan.exe; \
 	  mkdir -p dist/$$name && \
-	  echo "  $$name" && GOOS=$$os GOARCH=$$arch $(GOBUILD) -o dist/$$name/$$exe ./cmd/cuwan && \
+	  echo "  $$name" && GOOS=$$os GOARCH=$$arch $(GOBUILD) -o dist/$$name/cuwan ./cmd/cuwan && \
 	  cp LICENSE README.md dist/$$name/ && \
-	  if [ $$os = windows ]; then (cd dist/$$name && zip -qX ../$$name.zip *); \
-	  else tar -czf dist/$$name.tar.gz -C dist/$$name .; fi && \
+	  tar -czf dist/$$name.tar.gz -C dist/$$name . && \
 	  rm -rf dist/$$name || exit 1; \
 	done
 	@expected=$$(set -- $(PLATFORMS); echo $$#); \
-	got=$$(ls dist/*.tar.gz dist/*.zip 2>/dev/null | wc -l | tr -d ' '); \
+	got=$$(ls dist/*.tar.gz 2>/dev/null | wc -l | tr -d ' '); \
 	[ "$$got" = "$$expected" ] || { echo "dist: expected $$expected archives, got $$got"; exit 1; }
-	cd dist && (sha256sum *.tar.gz *.zip 2>/dev/null || shasum -a 256 *.tar.gz *.zip) > checksums.txt
+	cd dist && (sha256sum *.tar.gz 2>/dev/null || shasum -a 256 *.tar.gz) > checksums.txt
 
 clean: ## Remove build output
 	rm -rf bin/ dist/
