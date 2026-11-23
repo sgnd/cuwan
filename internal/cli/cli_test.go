@@ -128,7 +128,7 @@ func TestUnknownCommand(t *testing.T) {
 
 func TestSecretOnlyFromStdinAndNeverShown(t *testing.T) {
 	setup(t, &fakeEx{})
-	if code, _ := call(t, "secret", "set", "x", "the-value"); code == 0 {
+	if code, _ := callIn(t, "from-stdin\n", "secret", "set", "x", "the-value"); code == 0 {
 		t.Fatal("a secret on the command line was accepted")
 	}
 	if code, _ := callIn(t, "", "secret", "set", "x"); code == 0 {
