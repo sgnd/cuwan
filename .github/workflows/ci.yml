@@ -6,6 +6,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch: # adds a "Run workflow" button on GitHub
+  workflow_call: # the release workflow runs these checks first
 
 # least privilege: CI only reads the code (OpenSSF Scorecard: Token-Permissions)
 permissions:

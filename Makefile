@@ -5,7 +5,9 @@ LDFLAGS := -s -w -X github.com/sgnd/cuwan/internal/cli.Version=$(VERSION)
 # -p limits compile parallelism (modernc.org/sqlite is memory-heavy on first build)
 GOBUILD := CGO_ENABLED=0 go build -p 2 -trimpath -ldflags "$(LDFLAGS)"
 
-.PHONY: help build install test testnet lint security clean
+.PHONY: help build install test testnet lint security dist clean
+
+PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
 help: ## Show this help
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-15s %s\n", $$1, $$2}'
@@ -29,5 +31,22 @@ lint: ## gofmt check and go vet
 security: ## Known vulnerabilities in the code and its modules (govulncheck)
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+dist: ## Build release archives and checksums for macOS and Linux into ./dist
+	rm -rf dist && mkdir -p dist
+	@for p in $(PLATFORMS); do \
+	  os=$${p%/*}; arch=$${p#*/}; name=cuwan_$${os}_$${arch}; \
+	  exe=cuwan; [ $$os = windows ] && exe=cuwan.exe; \
+	  mkdir -p dist/$$name && \
+	  echo "  $$name" && GOOS=$$os GOARCH=$$arch $(GOBUILD) -o dist/$$name/$$exe ./cmd/cuwan && \
+	  cp LICENSE README.md dist/$$name/ && \
+	  if [ $$os = windows ]; then (cd dist/$$name && zip -qX ../$$name.zip *); \
+	  else tar -czf dist/$$name.tar.gz -C dist/$$name .; fi && \
+	  rm -rf dist/$$name || exit 1; \
+	done
+	@expected=$$(set -- $(PLATFORMS); echo $$#); \
+	got=$$(ls dist/*.tar.gz dist/*.zip 2>/dev/null | wc -l | tr -d ' '); \
+	[ "$$got" = "$$expected" ] || { echo "dist: expected $$expected archives, got $$got"; exit 1; }
+	cd dist && (sha256sum *.tar.gz *.zip 2>/dev/null || shasum -a 256 *.tar.gz *.zip) > checksums.txt
+
 clean: ## Remove build output
-	rm -rf bin/
+	rm -rf bin/ dist/
