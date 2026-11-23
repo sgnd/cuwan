@@ -25,7 +25,8 @@ drive it:
 
 It is built like [komando](https://github.com/sgnd/komando): one static
 binary for macOS and Linux, a sealed local store, and secrets referred to
-as `secret:NAME`. Windows waits for a key store backend.
+as `secret:NAME`. Windows waits for a key store backend. The whole CLI is
+about 4,600 lines of Go, small enough to read in an afternoon.
 
 ## Install
 
