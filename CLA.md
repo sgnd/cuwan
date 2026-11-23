@@ -2,7 +2,7 @@
 
 Thank you for contributing to cuwan. This agreement explains what
 happens to your contribution. Please read it before you send a pull
-request. You sign it once, by writing a comment on your first pull request
+request. You sign it in the description of each pull request
 (see [How to sign](#how-to-sign)).
 
 ## In plain words
@@ -64,14 +64,26 @@ rights to your Contribution. You may use it in any other way you like.
 
 ## How to sign
 
-When you open your first pull request, a bot asks you to sign. Write this
-comment on the pull request:
+Put this line in the description of your pull request:
 
 ```
 I have read the CLA Document and I hereby sign the CLA
 ```
 
-The bot records your GitHub name and the date. You only sign once, and it
-covers all your future contributions to cuwan.
+Type it yourself, on a line of its own. Did someone else write commits in
+your pull request? Each of them adds a line with their GitHub name first:
+
+```
+@their-login I have read the CLA Document and I hereby sign the CLA
+```
+
+A check on the pull request looks for a line from everyone who wrote a
+commit. When the pull request is merged, the maintainer adds a
+`CLA-Signed-By: <login> (#<number>, <date>)` line to the merge commit for
+each signer, so the record stays in git.
+
+Signatures given before 2026-11-23, by a comment to the old bot, are kept
+on the `cla-signatures` branch. That branch is never deleted: it is the only
+record of those signatures.
 
 Signing for a company? Email **sugandaletters@gmail.com** first.
