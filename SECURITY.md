@@ -47,5 +47,9 @@ inherit them. There is no sync daemon in the OSS CLI.
 - An AI agent cannot start, stop or remove anything: it gets NEEDS_PERSON.
   A person types the yes at their own terminal (`/dev/tty`); stdin is never
   read as the answer.
-- On macOS the store key asks the person on every read. On Linux the Secret
+- On macOS the store key asks the person on every read. Never choose
+  "Always Allow" on that keychain prompt: it would let cuwan, and anything
+  that runs as cuwan, read the key without asking. On Linux the Secret
   Service hands it to any process of the user once the keyring is unlocked.
+- Known limit: an agent that drives a real terminal (a pty) looks like a
+  person to cuwan. Run agents without a terminal, or with `CUWAN_AGENT=1`.

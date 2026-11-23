@@ -110,7 +110,7 @@ func setup(t *testing.T, fx *fakeEx) string {
 	if err := e.st.Update(func(s *store.State) error {
 		s.Secrets["k"] = "FAKEKEY:FAKESECRET"
 		s.Exchanges["fx"] = store.Exchange{Name: "fx", Venue: "binance", Market: "usdm", Secret: "k"}
-		s.Bots["g"] = store.Bot{Name: "g", Exchange: "fx", Symbol: "BTCUSDT", Lower: 90, Upper: 110, Levels: 5, OrderSize: 0.01, Leverage: 5, Futures: true}
+		s.Bots["g"] = store.Bot{Name: "g", Exchange: "fx", Symbol: "BTCUSDT", Lower: 90, Upper: 110, Levels: 5, OrderSize: 0.01, Leverage: 5}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -409,7 +409,7 @@ func TestFuturesBotNeedsLeverage(t *testing.T) {
 		}
 	}
 	code, e := call(t, append(append([]string{}, base...), "--leverage", "3")...)
-	if code != 0 || data(e)["futures"] != true {
+	if code != 0 || data(e)["leverage"].(float64) != 3 {
 		t.Fatalf("%d %+v", code, e)
 	}
 }
@@ -509,13 +509,78 @@ func TestRunStopFlattenClosesPosition(t *testing.T) {
 	}
 }
 
-func TestRunStartSetsCappedLeverage(t *testing.T) {
+func TestRunStartRefusesLeverageAboveCap(t *testing.T) {
 	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
 	setup(t, fx)
 	asPerson(t, "y")
 	e, _ := newEnv()
 	_ = e.st.Update(func(s *store.State) error { b := s.Bots["g"]; b.Leverage = 50; s.Bots["g"] = b; return nil })
-	if code, env := call(t, "run", "start", "g"); code != 0 || fx.leverage != 20 {
+	if code, env := call(t, "run", "start", "g"); code == 0 || !strings.Contains(env.Error, "bot add") || len(fx.calls) != 0 {
+		t.Fatalf("%d %+v calls %v", code, env, fx.calls)
+	}
+}
+
+func TestRunStartSetsLeverage(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	asPerson(t, "y")
+	if code, env := call(t, "run", "start", "g"); code != 0 || fx.leverage != 5 {
 		t.Fatalf("%d %+v leverage %v", code, env, fx.leverage)
+	}
+}
+
+// Audit second pass: the futures flag is not stored; it follows the market
+// each time a bot is loaded, and a bot that does not fit refuses to start.
+func TestFuturesIsNotStored(t *testing.T) {
+	b, _ := json.Marshal(store.Bot{Name: "x", Futures: true})
+	if strings.Contains(string(b), "futures") {
+		t.Fatalf("the futures flag is stored: %s", b)
+	}
+}
+
+func TestStoredBotWithoutLeverageOnFuturesRefuses(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	asPerson(t, "y")
+	e, _ := newEnv()
+	_ = e.st.Update(func(s *store.State) error { b := s.Bots["g"]; b.Leverage = 0; s.Bots["g"] = b; return nil })
+	code, env := call(t, "run", "start", "g")
+	if code == 0 || !strings.Contains(env.Error, "bot add") || len(fx.calls) != 0 {
+		t.Fatalf("%d %+v calls %v", code, env, fx.calls)
+	}
+}
+
+func TestExchangeReaddedAsFuturesRefusesSpotBot(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	asPerson(t, "y")
+	e, _ := newEnv()
+	_ = e.st.Update(func(s *store.State) error {
+		s.Exchanges["sp"] = store.Exchange{Name: "sp", Venue: "binance", Market: "spot", Secret: "k"}
+		s.Bots["s"] = store.Bot{Name: "s", Exchange: "sp", Symbol: "BTCUSDT", Lower: 90, Upper: 110, Levels: 5, OrderSize: 0.01}
+		// the exchange is removed and added again under the same name as futures
+		s.Exchanges["sp"] = store.Exchange{Name: "sp", Venue: "binance", Market: "usdm", Secret: "k"}
+		return nil
+	})
+	code, env := call(t, "run", "start", "s")
+	if code == 0 || !strings.Contains(env.Error, "bot add") || len(fx.calls) != 0 {
+		t.Fatalf("%d %+v calls %v", code, env, fx.calls)
+	}
+}
+
+func TestResumeRefusesBotThatDoesNotFit(t *testing.T) {
+	fx := &fakeEx{perms: exchangex.Permissions{CanTrade: true}}
+	setup(t, fx)
+	asPerson(t, "y")
+	e, _ := newEnv()
+	_ = e.st.Update(func(s *store.State) error {
+		b := s.Bots["g"]
+		b.Leverage = 0
+		s.Bots["g"] = b
+		s.Runtimes["g"] = store.Runtime{Bot: "g", Status: "running", Meta: map[string]string{"run_id": "abc"}}
+		return nil
+	})
+	if code, env := call(t, "run", "start", "g"); code == 0 || !strings.Contains(env.Error, "bot add") {
+		t.Fatalf("%d %+v", code, env)
 	}
 }

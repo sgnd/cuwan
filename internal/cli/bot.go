@@ -79,15 +79,7 @@ func validBot(b *store.Bot, s *store.State) error {
 			return errors.New("every number must be finite")
 		}
 	}
-	// Futures follows the exchange's market, never the leverage field.
-	b.Futures = x.Market != "spot"
-	switch {
-	case b.Futures && (b.Leverage < 1 || b.Leverage > live.MaxLeverage || b.Leverage != math.Trunc(b.Leverage)):
-		return fmt.Errorf("a futures exchange needs --leverage, a whole number from 1 to %g", live.MaxLeverage)
-	case !b.Futures && b.Leverage != 0:
-		return errors.New("--leverage is for futures; this exchange is spot")
-	}
-	return nil
+	return fitMarket(b, x)
 }
 
 func botAdd(args []string) int { return botSave("bot.add", args, true) }
@@ -214,4 +206,17 @@ func botRm(args []string) int {
 		out.Print(os.Stdout, "bot.rm", map[string]string{"name": f.pos[0]}, "removed "+f.pos[0])
 		return 0
 	})
+}
+
+// fitMarket sets the bot's futures flag from its exchange's market (it is
+// never stored) and checks that the bot's leverage fits that market.
+func fitMarket(b *store.Bot, x store.Exchange) error {
+	b.Futures = x.Market != "spot"
+	switch {
+	case b.Futures && (b.Leverage < 1 || b.Leverage > live.MaxLeverage || b.Leverage != math.Trunc(b.Leverage)):
+		return fmt.Errorf("a futures exchange needs --leverage, a whole number from 1 to %g", live.MaxLeverage)
+	case !b.Futures && b.Leverage != 0:
+		return errors.New("--leverage is for futures; this exchange is spot")
+	}
+	return nil
 }

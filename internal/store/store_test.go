@@ -183,3 +183,11 @@ func TestPrivateFiles(t *testing.T) {
 		t.Errorf("store %v", fi.Mode().Perm())
 	}
 }
+
+// Low: each part of an audit sum is length-prefixed, so moving bytes from one
+// part to the next changes the sum.
+func TestSumPartsAreFramed(t *testing.T) {
+	if string(sumParts([]byte("ab"), []byte("c"))) == string(sumParts([]byte("a"), []byte("bc"))) {
+		t.Fatal("two splits of the same bytes give the same sum")
+	}
+}

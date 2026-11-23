@@ -28,16 +28,22 @@ const maxStepErrors = 6
 // stopWait is how long `run stop` waits for a running loop to let go.
 var stopWait = 60 * time.Second
 
-func (e *env) bot(name string) (store.Bot, error) {
-	var b store.Bot
-	err := e.st.View(func(s *store.State) error {
+// bot loads a bot with its futures flag set from its exchange's market. fit
+// is the error when the bot's leverage does not fit that market.
+func (e *env) bot(name string) (b store.Bot, fit error, err error) {
+	err = e.st.View(func(s *store.State) error {
 		var ok bool
 		if b, ok = s.Bots[name]; !ok {
 			return fmt.Errorf("no bot %q", name)
 		}
+		x, ok := s.Exchanges[b.Exchange]
+		if !ok {
+			return fmt.Errorf("bot %s uses exchange %q, which does not exist", name, b.Exchange)
+		}
+		fit = fitMarket(&b, x)
 		return nil
 	})
-	return b, err
+	return b, fit, err
 }
 
 // saver writes the runtime back into the store.
@@ -60,9 +66,12 @@ func runStart(args []string) int {
 
 func start(e *env, f *flags) int {
 	ctx := context.Background()
-	bot, err := e.bot(f.pos[0])
+	bot, fit, err := e.bot(f.pos[0])
 	if err != nil {
 		return out.Fail("run.start", err, 1)
+	}
+	if fit != nil {
+		return out.Fail("run.start", fmt.Errorf("bot %s does not fit its exchange: %w; remove it and run `cuwan bot add` again", bot.Name, fit), 1)
 	}
 	x, drv, err := e.driver(bot.Exchange)
 	if err != nil {
@@ -269,7 +278,7 @@ func runStop(args []string) int {
 
 func stop(e *env, name string, flatten bool) int {
 	ctx := context.Background()
-	bot, err := e.bot(name)
+	bot, _, err := e.bot(name) // a stop always runs: the flag still follows the market
 	if err != nil {
 		return out.Fail("run.stop", err, 1)
 	}

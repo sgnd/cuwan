@@ -68,7 +68,7 @@ type Bot struct {
 	OrderSize   float64 `json:"order_size,omitempty"`   // base asset per order
 	QuoteAmount float64 `json:"quote_amount,omitempty"` // quote asset per order
 	Leverage    float64 `json:"leverage,omitempty"`     // futures only, 1 to 20
-	Futures     bool    `json:"futures,omitempty"`      // from the exchange market; drives the guard
+	Futures     bool    `json:"-"`                      // never stored: set from the exchange market on load
 	OnExit      string  `json:"on_exit,omitempty"`      // stop | pause | trail
 	TakeProfit  float64 `json:"take_profit,omitempty"`
 	StopLoss    float64 `json:"stop_loss,omitempty"`
@@ -262,13 +262,21 @@ func (st *State) Append(data any) error {
 }
 
 func sum(prev []byte, e Entry) []byte {
-	h := sha256.New()
-	h.Write(prev)
 	var n [8]byte
 	binary.BigEndian.PutUint64(n[:], uint64(e.Seq)) // #nosec G115 -- Seq starts at 1 and only grows
-	h.Write(n[:])
-	h.Write([]byte(e.Time.UTC().Format(time.RFC3339Nano)))
-	h.Write(e.Data)
+	return sumParts(prev, n[:], []byte(e.Time.UTC().Format(time.RFC3339Nano)), e.Data)
+}
+
+// sumParts hashes each part with its length in front, so bytes cannot move
+// from one part to the next without changing the sum.
+func sumParts(parts ...[]byte) []byte {
+	h := sha256.New()
+	var l [8]byte
+	for _, p := range parts {
+		binary.BigEndian.PutUint64(l[:], uint64(len(p)))
+		h.Write(l[:])
+		h.Write(p)
+	}
 	return h.Sum(nil)
 }
 

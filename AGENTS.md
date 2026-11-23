@@ -22,7 +22,7 @@ Set `CUWAN_AGENT=1` so cuwan never prompts and emits JSON envelopes.
 
 - `cuwan audit`: the local audit log, checked as it is read
 - `cuwan balance`: balances on a venue account
-- `cuwan bot add`: add a grid bot; it needs `--order-size` or `--quote-amount` (range exits: `--on-exit stop|pause|trail`, `--take-profit`, `--stop-loss`)
+- `cuwan bot add`: add a grid bot; it needs `--order-size` or `--quote-amount`, and on a futures exchange `--leverage`, a whole number from 1 to 20 (range exits: `--on-exit stop|pause|trail`, `--take-profit`, `--stop-loss`)
 - `cuwan bot edit`: change a stopped bot
 - `cuwan bot list`: list bots
 - `cuwan bot rm`: remove a stopped bot (needs a person at the terminal; an agent gets NEEDS_PERSON)
