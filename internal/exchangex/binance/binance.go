@@ -21,11 +21,6 @@ import (
 
 func init() {
 	exchangex.Register("binance", Open)
-	exchangex.RegisterMeta(exchangex.VenueInfo{
-		ID: "binance", Kind: exchangex.KindCEX,
-		Markets: []string{exchangex.MarketSpot, exchangex.MarketUSDM},
-		Backend: exchangex.BackendNative, PublicTicker: true, Live: "full",
-	}, Open)
 }
 
 // Open builds a Binance driver.
@@ -101,10 +96,29 @@ func (d *Driver) Ticker(ctx context.Context, symbol string) (exchangex.Ticker, e
 	return exchangex.Ticker{Symbol: symbol, Price: px, Time: time.Now().UTC()}, nil
 }
 
-func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
-	if d.cfg.Paper {
-		return nil, fmt.Errorf("binance: balances require credentials (not available in paper public mode)")
+// MarkPrice is the USD-M mark price (premiumIndex); spot has none, so it is
+// the last price there.
+func (d *Driver) MarkPrice(ctx context.Context, symbol string) (float64, error) {
+	if d.market != exchangex.MarketUSDM {
+		t, err := d.Ticker(ctx, symbol)
+		return t.Price, err
 	}
+	var raw struct {
+		MarkPrice string `json:"markPrice"`
+	}
+	if err := d.getPublic(ctx, "/fapi/v1/premiumIndex", url.Values{"symbol": {symbol}}, &raw); err != nil {
+		return 0, err
+	}
+	var p parser
+	px := p.f(raw.MarkPrice)
+	if p.err == nil && px <= 0 {
+		p.err = fmt.Errorf("binance: mark price %v for %s", px, symbol)
+	}
+	return px, p.err
+}
+
+func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
+	var p parser
 	if d.market == exchangex.MarketUSDM {
 		var raw []struct {
 			Asset            string `json:"asset"`
@@ -116,14 +130,14 @@ func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
 		}
 		var out []exchangex.Balance
 		for _, r := range raw {
-			free, _ := strconv.ParseFloat(r.AvailableBalance, 64)
-			total, _ := strconv.ParseFloat(r.Balance, 64)
+			free := p.f(r.AvailableBalance)
+			total := p.f(r.Balance)
 			if total == 0 {
 				continue
 			}
 			out = append(out, exchangex.Balance{Asset: r.Asset, Free: free, Locked: total - free})
 		}
-		return out, nil
+		return out, p.err
 	}
 	var raw struct {
 		Balances []struct {
@@ -137,21 +151,19 @@ func (d *Driver) Balances(ctx context.Context) ([]exchangex.Balance, error) {
 	}
 	var out []exchangex.Balance
 	for _, b := range raw.Balances {
-		free, _ := strconv.ParseFloat(b.Free, 64)
-		locked, _ := strconv.ParseFloat(b.Locked, 64)
+		free := p.f(b.Free)
+		locked := p.f(b.Locked)
 		if free == 0 && locked == 0 {
 			continue
 		}
 		out = append(out, exchangex.Balance{Asset: b.Asset, Free: free, Locked: locked})
 	}
-	return out, nil
+	return out, p.err
 }
 
 func (d *Driver) Positions(ctx context.Context) ([]exchangex.Position, error) {
+	var p parser
 	if d.market != exchangex.MarketUSDM {
-		return nil, nil
-	}
-	if d.cfg.Paper {
 		return nil, nil
 	}
 	var raw []struct {
@@ -173,7 +185,7 @@ func (d *Driver) Positions(ctx context.Context) ([]exchangex.Position, error) {
 		if r.PositionSide != "" && r.PositionSide != "BOTH" {
 			return nil, fmt.Errorf("binance: hedge mode (positionSide %s) is not supported; switch the account to one-way mode", r.PositionSide)
 		}
-		size, _ := strconv.ParseFloat(r.PositionAmt, 64)
+		size := p.f(r.PositionAmt)
 		if size == 0 {
 			continue
 		}
@@ -182,22 +194,20 @@ func (d *Driver) Positions(ctx context.Context) ([]exchangex.Position, error) {
 			side = exchangex.SideSell
 			size = -size
 		}
-		entry, _ := strconv.ParseFloat(r.EntryPrice, 64)
-		lev, _ := strconv.ParseFloat(r.Leverage, 64)
-		liq, _ := strconv.ParseFloat(r.LiquidationPrice, 64)
-		upnl, _ := strconv.ParseFloat(r.UnrealizedProfit, 64)
+		entry := p.f(r.EntryPrice)
+		lev := p.f(r.Leverage)
+		liq := p.f(r.LiquidationPrice)
+		upnl := p.f(r.UnrealizedProfit)
 		out = append(out, exchangex.Position{
 			Symbol: r.Symbol, Side: side, Size: size, EntryPrice: entry,
 			Leverage: lev, LiquidationPrice: liq, UnrealizedPNL: upnl,
 		})
 	}
-	return out, nil
+	return out, p.err
 }
 
 func (d *Driver) OpenOrders(ctx context.Context, symbol string) ([]exchangex.Order, error) {
-	if d.cfg.Paper {
-		return nil, nil
-	}
+	var p parser
 	q := url.Values{}
 	if symbol != "" {
 		q.Set("symbol", symbol)
@@ -222,22 +232,19 @@ func (d *Driver) OpenOrders(ctx context.Context, symbol string) ([]exchangex.Ord
 	}
 	out := make([]exchangex.Order, 0, len(raw))
 	for _, r := range raw {
-		px, _ := strconv.ParseFloat(r.Price, 64)
-		qty, _ := strconv.ParseFloat(r.OrigQty, 64)
-		filled, _ := strconv.ParseFloat(r.ExecutedQty, 64)
+		px := p.f(r.Price)
+		qty := p.f(r.OrigQty)
+		filled := p.f(r.ExecutedQty)
 		out = append(out, exchangex.Order{
 			ID: strconv.FormatInt(r.OrderID, 10), ClientOID: r.ClientOrderID,
 			Symbol: r.Symbol, Side: strings.ToLower(r.Side), Price: px, Qty: qty,
 			Filled: filled, Status: normStatus(r.Status), ReduceOnly: r.ReduceOnly,
 		})
 	}
-	return out, nil
+	return out, p.err
 }
 
 func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchangex.Order, error) {
-	if d.cfg.Paper {
-		return exchangex.Order{}, fmt.Errorf("binance: paper mode refuses signed PlaceOrder")
-	}
 	q := url.Values{
 		"symbol":           {req.Symbol},
 		"side":             {strings.ToUpper(req.Side)},
@@ -260,28 +267,20 @@ func (d *Driver) PlaceOrder(ctx context.Context, req exchangex.PlaceReq) (exchan
 	var raw struct {
 		OrderID       int64  `json:"orderId"`
 		ClientOrderID string `json:"clientOrderId"`
-		Symbol        string `json:"symbol"`
-		Side          string `json:"side"`
-		Price         string `json:"price"`
-		OrigQty       string `json:"origQty"`
 		Status        string `json:"status"`
 	}
 	if err := d.signed(ctx, http.MethodPost, path, q, &raw); err != nil {
 		return exchangex.Order{}, err
 	}
-	px, _ := strconv.ParseFloat(raw.Price, 64)
-	qty, _ := strconv.ParseFloat(raw.OrigQty, 64)
+	// The engine keeps its own price and size; only the ID and state count.
 	return exchangex.Order{
 		ID: strconv.FormatInt(raw.OrderID, 10), ClientOID: raw.ClientOrderID,
-		Symbol: raw.Symbol, Side: strings.ToLower(raw.Side), Price: px, Qty: qty,
+		Symbol: req.Symbol, Side: req.Side, Price: req.Price, Qty: req.Qty,
 		Status: normStatus(raw.Status), ReduceOnly: req.ReduceOnly,
 	}, nil
 }
 
 func (d *Driver) CancelOrder(ctx context.Context, symbol, orderID, clientOID string) error {
-	if d.cfg.Paper {
-		return fmt.Errorf("binance: paper mode refuses signed CancelOrder")
-	}
 	q := url.Values{"symbol": {symbol}}
 	if orderID != "" {
 		q.Set("orderId", orderID)
@@ -297,7 +296,7 @@ func (d *Driver) CancelOrder(ctx context.Context, symbol, orderID, clientOID str
 }
 
 func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) error {
-	if d.market != exchangex.MarketUSDM || d.cfg.Paper {
+	if d.market != exchangex.MarketUSDM {
 		return nil
 	}
 	q := url.Values{
@@ -311,7 +310,7 @@ func (d *Driver) SetLeverage(ctx context.Context, symbol string, lev float64) er
 // with /sapi/v1/account/apiRestrictions (the same endpoint for spot and USD-M
 // keys). Testnet keys hold no real funds, so they are reported as trade-only.
 func (d *Driver) Permissions(ctx context.Context) (exchangex.Permissions, error) {
-	if d.cfg.Paper || d.cfg.APIKey == "" {
+	if d.cfg.APIKey == "" {
 		return exchangex.Permissions{CanRead: true}, nil
 	}
 	if d.cfg.Testnet {
@@ -352,6 +351,7 @@ func (d *Driver) restrictionsBase() string {
 // Rules reads the symbol's PRICE_FILTER and LOT_SIZE from exchangeInfo and
 // caches them for the life of the driver.
 func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRules, error) {
+	var p parser
 	d.rulesMu.Lock()
 	defer d.rulesMu.Unlock()
 	if r, ok := d.rules[symbol]; ok {
@@ -363,8 +363,9 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 	}
 	var raw struct {
 		Symbols []struct {
-			Symbol  string `json:"symbol"`
-			Filters []struct {
+			Symbol    string `json:"symbol"`
+			BaseAsset string `json:"baseAsset"`
+			Filters   []struct {
 				Type     string `json:"filterType"`
 				TickSize string `json:"tickSize"`
 				StepSize string `json:"stepSize"`
@@ -382,20 +383,22 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 		if sym.Symbol != symbol {
 			continue
 		}
-		var r exchangex.SymbolRules
+		r := exchangex.SymbolRules{Base: sym.BaseAsset}
 		for _, f := range sym.Filters {
 			switch f.Type {
 			case "PRICE_FILTER":
-				r.Tick, _ = strconv.ParseFloat(f.TickSize, 64)
+				r.Tick = p.f(f.TickSize)
 			case "LOT_SIZE":
-				r.Step, _ = strconv.ParseFloat(f.StepSize, 64)
-				r.MinQty, _ = strconv.ParseFloat(f.MinQty, 64)
+				r.Step = p.f(f.StepSize)
+				r.MinQty = p.f(f.MinQty)
 			case "NOTIONAL", "MIN_NOTIONAL":
 				v := f.MinNotional
 				if v == "" {
 					v = f.Notional
 				}
-				r.MinNotional, _ = strconv.ParseFloat(v, 64)
+				if v != "" {
+					r.MinNotional = p.f(v)
+				}
 			}
 		}
 		if r.Tick <= 0 || r.Step <= 0 {
@@ -403,6 +406,9 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 		}
 		if d.rules == nil {
 			d.rules = map[string]exchangex.SymbolRules{}
+		}
+		if p.err != nil {
+			return exchangex.SymbolRules{}, p.err
 		}
 		d.rules[symbol] = r
 		return r, nil
@@ -412,9 +418,7 @@ func (d *Driver) Rules(ctx context.Context, symbol string) (exchangex.SymbolRule
 
 // OrderStatus reports one order by exchange ID or client order ID.
 func (d *Driver) OrderStatus(ctx context.Context, symbol, orderID, clientOID string) (exchangex.Order, error) {
-	if d.cfg.Paper {
-		return exchangex.Order{}, fmt.Errorf("binance: paper mode refuses signed OrderStatus")
-	}
+	var p parser
 	q := url.Values{"symbol": {symbol}}
 	if orderID != "" {
 		q.Set("orderId", orderID)
@@ -440,14 +444,14 @@ func (d *Driver) OrderStatus(ctx context.Context, symbol, orderID, clientOID str
 	if err := d.signed(ctx, http.MethodGet, path, q, &r); err != nil {
 		return exchangex.Order{}, err
 	}
-	px, _ := strconv.ParseFloat(r.Price, 64)
-	qty, _ := strconv.ParseFloat(r.OrigQty, 64)
-	filled, _ := strconv.ParseFloat(r.ExecutedQty, 64)
+	px := p.f(r.Price)
+	qty := p.f(r.OrigQty)
+	filled := p.f(r.ExecutedQty)
 	return exchangex.Order{
 		ID: strconv.FormatInt(r.OrderID, 10), ClientOID: r.ClientOrderID,
 		Symbol: r.Symbol, Side: strings.ToLower(r.Side), Price: px, Qty: qty,
 		Filled: filled, Status: normStatus(r.Status),
-	}, nil
+	}, p.err
 }
 
 // normStatus maps Binance order states to the runtime states cuwan uses:
@@ -475,15 +479,15 @@ func (d *Driver) getPublic(ctx context.Context, path string, q url.Values, dest 
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return err
+		return d.clean(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return d.clean(err)
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("binance: %s: %s", resp.Status, truncate(body))
+		return d.clean(fmt.Errorf("binance: %s: %s", resp.Status, truncate(body)))
 	}
 	return json.Unmarshal(body, dest)
 }
@@ -500,6 +504,7 @@ func (d *Driver) signedAt(ctx context.Context, base, method, path string, q url.
 		q = url.Values{}
 	}
 	q.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	q.Set("recvWindow", "5000")
 	payload := q.Encode()
 	mac := hmac.New(sha256.New, []byte(d.cfg.APISecret))
 	mac.Write([]byte(payload))
@@ -512,12 +517,12 @@ func (d *Driver) signedAt(ctx context.Context, base, method, path string, q url.
 	req.Header.Set("X-MBX-APIKEY", d.cfg.APIKey)
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return err
+		return d.clean(err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return d.clean(err)
 	}
 	if resp.StatusCode >= 300 {
 		var e struct {
@@ -526,12 +531,29 @@ func (d *Driver) signedAt(ctx context.Context, base, method, path string, q url.
 		if json.Unmarshal(body, &e) == nil && (e.Code == codeNoSuchOrder || e.Code == codeUnknownOrder) {
 			return fmt.Errorf("binance: %w", exchangex.ErrOrderNotFound)
 		}
-		return fmt.Errorf("binance: %s: %s", resp.Status, truncate(body))
+		return d.clean(fmt.Errorf("binance: %s: %s", resp.Status, truncate(body)))
 	}
 	if dest == nil {
 		return nil
 	}
 	return json.Unmarshal(body, dest)
+}
+
+// clean removes the key, the secret and the signed query from err.
+func (d *Driver) clean(err error) error {
+	return exchangex.CleanErr(err, d.cfg.APIKey, d.cfg.APISecret)
+}
+
+// parser reads venue numbers and keeps the first one that does not parse,
+// so a bad answer is an error, never a silent 0.
+type parser struct{ err error }
+
+func (p *parser) f(v string) float64 {
+	x, err := strconv.ParseFloat(v, 64)
+	if err != nil && p.err == nil {
+		p.err = fmt.Errorf("binance: bad number %q in the answer", truncate([]byte(v)))
+	}
+	return x
 }
 
 func formatFloat(f float64) string {

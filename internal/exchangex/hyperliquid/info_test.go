@@ -78,14 +78,14 @@ func TestRulesFromMeta(t *testing.T) {
 	}
 }
 
-// A secret that is not a valid key fails closed; paper needs no key.
+// A secret that is not a valid key, or no key at all, fails closed.
 func TestPermissionsFailClosed(t *testing.T) {
 	d, _ := info(t, nil)
 	if _, err := d.Permissions(context.Background()); err == nil {
 		t.Fatal("wallet key reported as safe")
 	}
-	d.cfg.Paper = true
-	if _, err := d.Permissions(context.Background()); err != nil {
-		t.Fatal(err)
+	d.cfg.APISecret = ""
+	if _, err := d.Permissions(context.Background()); err == nil {
+		t.Fatal("no key reported as safe")
 	}
 }

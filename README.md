@@ -11,10 +11,11 @@ hold your exchange keys. cuwan runs them on your own machine instead, and
 you and an AI agent (Claude Code, Codex, Cursor, your own bot) can both
 drive it:
 
-- **Your keys stay in an encrypted vault** under `~/.cuwan`. An AI agent
+- **Your keys stay in one encrypted file** under `~/.cuwan`, sealed with a
+  key kept in the macOS keychain or the Linux Secret Service. An AI agent
   sees `[secret:NAME]`, never the value.
-- **Try a grid on paper first.** Paper mode uses public prices and never
-  sends a signed order.
+- **Look before you trade.** `cuwan run start NAME --dry-run` shows every
+  order and sends nothing.
 - **Live orders need a person's yes.** cuwan refuses a key that can
   withdraw, caps leverage at 20x, and closes a position before it nears
   liquidation. The close cannot be turned off.
@@ -23,7 +24,9 @@ drive it:
   to [efolusi.com](https://efolusi.com).
 
 It is built like [komando](https://github.com/sgnd/komando): one static
-binary, a sealed local store, and secrets referred to as `secret:NAME`.
+binary for macOS and Linux, a sealed local store, and secrets referred to
+as `secret:NAME`. Windows waits for a key store backend. The whole CLI is
+about 4,600 lines of Go, small enough to read in an afternoon.
 
 ## Install
 
@@ -41,43 +44,59 @@ cd cuwan && make build
 
 ## Venues
 
-```bash
-cuwan exchange venues                 # list every registered venue id
-cuwan exchange add my-okx --venue okx --secret secret:okx-main --market spot
-```
-
-Which venues work today:
-
-| Venue | Paper | Live |
-|---|---|---|
-| Binance spot and USD-M | yes | yes; the first run on the Binance testnet is still to come |
-| Hyperliquid perps | yes | testnet only, until its testnet run is done |
-| Every other id in `cuwan exchange venues` | public prices where the venue has them | no: catalog entries only |
-
-`cuwan run start` refuses a live run on a venue that is not marked `full`,
-unless the exchange is set to its testnet.
-Secrets stay sealed refs (`secret:NAME`) and are never shown raw to agents.
+| Venue | Live |
+|---|---|
+| Binance spot and USD-M | yes |
+| Hyperliquid perps | testnet only, until its testnet run is recorded |
 
 ## First commands
 
 ```bash
-cuwan doctor                              # create ~/.cuwan, check sealed store
-cuwan secret set binance-main             # keys never on argv in agent mode
-cuwan exchange add binance --venue binance --secret secret:binance-main --market spot
-
+cuwan doctor                              # make ~/.cuwan and check the key store
+printf '%s' "$API_KEY:$API_SECRET" | cuwan secret set binance-main
+cuwan exchange add binance --venue binance --market usdm --secret binance-main --live
+cuwan exchange test binance               # the key must not be able to withdraw
 cuwan bot add btc-grid --exchange binance --symbol BTCUSDT \
-  --lower 90000 --upper 110000 --levels 10
-cuwan paper start btc-grid                # public market data; no signed orders
-cuwan paper status btc-grid
+  --lower 90000 --upper 110000 --levels 10 --order-size 0.001 --leverage 3
+cuwan run start btc-grid --dry-run        # every order, nothing sent
+cuwan run start btc-grid                  # asks you, then runs in the foreground
 ```
 
-Live trading needs an explicit person confirm. Futures leverage is capped at
-**20x**; a **~5%** preventive reduce-only close vs estimated liquidation is
-always on.
+A live bot keeps its grid full: each filled order gets one counter order.
+Stop the process and start it again, and `cuwan run start` resumes the same
+run by client order ID. When the price leaves the range, `--on-exit pause`
+(the default) waits, `stop` flattens and stops, and `trail` moves the range.
+`--take-profit` and `--stop-loss` flatten and stop. `cuwan run stop NAME
+--flatten` cancels the grid and closes the bot's own position.
+
+## Safety
+
+- Live orders, stops and removals need a person, who types the yes at their
+  terminal; an AI agent gets NEEDS_PERSON, with or without `--yes`.
+- An exchange says where it trades: `--live` or `--testnet`. A futures
+  exchange needs `--leverage`, a whole number from 1 to 20.
+- cuwan refuses a key that can withdraw or transfer funds.
+- Leverage is capped at 20x.
+- The preventive close reads the venue's mark price and fires before the
+  liquidation price: the venue's own, or a bound that assumes the largest
+  maintenance margin. It runs before every other rule and cannot be turned
+  off. Spot bots stop and sell back 5% below their range.
+
+| Position | Entry | Venue liquidation | Leverage | Closes at mark |
+|---|---|---|---|---|
+| Long | 100 | 96 | 20x | 96.2 |
+| Long | 100 | none given | 20x | 97.7 |
+| Short | 100 | 104 | 20x | 103.8 |
+| Short | 100 | none given | 10x | 104.75 |
+| Grid long filled at 95 | 95 | none given | 20x | 92.815 |
+
+The formula and every case are in [docs/design/guard.md](docs/design/guard.md).
 
 ## Agents
 
-Set `CUWAN_AGENT=1`. Start with `cuwan guide` and `cuwan schema`. Secrets print
+Set `CUWAN_AGENT=1`. Start with `cuwan guide` and `cuwan schema`.
+`cuwan guide install` adds the skill for Claude Code, Codex, Cursor and
+Gemini CLI. Secrets print
 as `[hidden]` / `[secret:NAME]`. See [AGENTS.md](AGENTS.md) and
 [skills/cuwan/SKILL.md](skills/cuwan/SKILL.md).
 

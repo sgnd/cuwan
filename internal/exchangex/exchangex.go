@@ -1,83 +1,62 @@
-// Package exchangex defines the venue interface and driver registry.
+// Package exchangex defines the venue driver interface. cuwan has two
+// drivers: Binance (spot and USD-M, live) and Hyperliquid (perps, testnet
+// only until its testnet run is done).
 package exchangex
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 )
 
-// Market kinds.
+// Markets.
 const (
 	MarketSpot = "spot"
 	MarketUSDM = "usdm"
 	MarketPerp = "perp"
 )
 
-// Side of an order.
+// Sides.
 const (
 	SideBuy  = "buy"
 	SideSell = "sell"
 )
 
-// Venue kinds.
+// Order states the engine uses.
 const (
-	KindCEX = "cex"
-	KindDEX = "dex"
+	StatusOpen     = "open"
+	StatusFilled   = "filled"
+	StatusCanceled = "canceled"
+	StatusUnknown  = "unknown"
 )
 
-// Backend labels for registry metadata.
-const (
-	BackendNative   = "native"
-	BackendPublic   = "public"
-	BackendRegistry = "registry"
-)
-
-// ErrOrderNotFound is returned by OrderStatus when the venue has no order
-// with that ID. Drivers wrap it so callers can use errors.Is.
+// ErrOrderNotFound means the venue has no order with that ID. Drivers wrap it.
 var ErrOrderNotFound = errors.New("order not found")
 
-// SymbolRules are a symbol's order filters: price tick, size step and the
-// smallest size the venue accepts.
-type SymbolRules struct {
-	Tick   float64
-	Step   float64
-	MinQty float64
-	// MinNotional is the smallest price * size the venue accepts.
-	MinNotional float64
-	// SigFigs, when set, limits prices to that many significant figures,
-	// so the tick depends on the price (Hyperliquid). Tick is then the
-	// smallest tick allowed by the decimals limit.
-	SigFigs int
-}
-
-// RulesProvider is an optional driver interface that reports SymbolRules.
-type RulesProvider interface {
-	Rules(ctx context.Context, symbol string) (SymbolRules, error)
-}
-
-// Exchange is a trading venue driver.
+// Exchange is a venue driver. Every method that sends a key goes through the
+// driver's error cleaning (CleanErr), so no error holds a key or signature.
 type Exchange interface {
 	Name() string
 	Market() string
-	// Ticker returns the last price for symbol.
+	// Ticker is the last traded price.
 	Ticker(ctx context.Context, symbol string) (Ticker, error)
-	// Balances returns non-zero balances.
+	// MarkPrice is the price the venue liquidates on (the last price on spot).
+	MarkPrice(ctx context.Context, symbol string) (float64, error)
 	Balances(ctx context.Context) ([]Balance, error)
-	// Positions returns open positions (futures/perps); spot may return nil.
+	// Positions lists open futures positions; spot returns none.
 	Positions(ctx context.Context) ([]Position, error)
-	// OpenOrders lists open orders for symbol (empty = all).
 	OpenOrders(ctx context.Context, symbol string) ([]Order, error)
-	// PlaceOrder submits an order. Paper drivers must not hit signed endpoints.
 	PlaceOrder(ctx context.Context, req PlaceReq) (Order, error)
-	// CancelOrder cancels by exchange id or client oid.
 	CancelOrder(ctx context.Context, symbol, orderID, clientOID string) error
-	// SetLeverage sets leverage for symbol (futures). Spot may no-op.
+	// OrderStatus reports one order by exchange ID or client order ID, or an
+	// error wrapping ErrOrderNotFound.
+	OrderStatus(ctx context.Context, symbol, orderID, clientOID string) (Order, error)
+	// Rules are the symbol's price tick, size step and minimums.
+	Rules(ctx context.Context, symbol string) (SymbolRules, error)
 	SetLeverage(ctx context.Context, symbol string, lev float64) error
-	// Permissions probes key capabilities when the venue supports it.
+	// Permissions says whether the key can withdraw.
 	Permissions(ctx context.Context) (Permissions, error)
 }
 
@@ -95,7 +74,8 @@ type Balance struct {
 	Locked float64
 }
 
-// Position is a futures/perp position.
+// Position is a futures position. LiquidationPrice is the venue's own
+// figure, 0 when it gave none.
 type Position struct {
 	Symbol           string
 	Side             string
@@ -106,7 +86,7 @@ type Position struct {
 	UnrealizedPNL    float64
 }
 
-// Order is an exchange order.
+// Order is a venue order.
 type Order struct {
 	ID         string
 	ClientOID  string
@@ -119,7 +99,7 @@ type Order struct {
 	ReduceOnly bool
 }
 
-// PlaceReq is a new order request.
+// PlaceReq is a new limit order.
 type PlaceReq struct {
 	Symbol     string
 	Side       string
@@ -127,12 +107,24 @@ type PlaceReq struct {
 	Qty        float64
 	ClientOID  string
 	ReduceOnly bool
-	PostOnly   bool
 	// IOC fills what it can at once and cancels the rest.
 	IOC bool
 }
 
-// Permissions describes API key capabilities.
+// SymbolRules are a symbol's order filters.
+type SymbolRules struct {
+	Tick        float64
+	Step        float64
+	MinQty      float64
+	MinNotional float64
+	// SigFigs, when set, limits prices to that many significant figures
+	// (Hyperliquid).
+	SigFigs int
+	// Base is the asset bought by a buy order (BTC in BTCUSDT).
+	Base string
+}
+
+// Permissions describes what an API key may do.
 type Permissions struct {
 	CanTrade    bool
 	CanWithdraw bool
@@ -140,117 +132,41 @@ type Permissions struct {
 	Raw         string
 }
 
-// VenueInfo describes a registered trading venue.
-type VenueInfo struct {
-	ID           string   `json:"id"`
-	Kind         string   `json:"kind"`
-	Markets      []string `json:"markets"`
-	Backend      string   `json:"backend"`
-	PublicTicker bool     `json:"public_ticker"`
-	Live         string   `json:"live"` // full | paper-only | stub
-}
-
-var (
-	regMu sync.RWMutex
-	ctors = map[string]Factory{}
-	metas = map[string]VenueInfo{}
-)
-
-// Factory builds an Exchange from config.
-type Factory func(cfg Config) (Exchange, error)
-
-// Config for opening a driver.
+// Config opens a driver.
 type Config struct {
 	Venue     string
 	Market    string
 	APIKey    string
-	APISecret string // or wallet private key for DEX
+	APISecret string // the wallet private key on Hyperliquid
 	Testnet   bool
-	Paper     bool // public data only; never signed orders
 }
 
-// Register adds a venue factory (overwrites existing factory for the same id).
+// Factory builds a driver.
+type Factory func(cfg Config) (Exchange, error)
+
+var (
+	mu        sync.RWMutex
+	factories = map[string]Factory{}
+)
+
+// Register adds a venue's driver.
 func Register(venue string, f Factory) {
-	regMu.Lock()
-	defer regMu.Unlock()
-	ctors[venue] = f
-	m, ok := metas[venue]
-	if !ok {
-		m = VenueInfo{ID: venue, Kind: KindCEX, Markets: []string{MarketSpot}, Backend: BackendNative, Live: "stub"}
-	}
-	metas[venue] = m
+	mu.Lock()
+	defer mu.Unlock()
+	factories[venue] = f
 }
 
-// RegisterMeta stores/overrides venue metadata and optionally its factory.
-func RegisterMeta(info VenueInfo, f Factory) {
-	regMu.Lock()
-	defer regMu.Unlock()
-	if info.ID == "" {
-		return
-	}
-	metas[info.ID] = info
-	if f != nil {
-		ctors[info.ID] = f
-	}
-}
-
-// SetBackend updates the backend label after a native driver overrides a catalog entry.
-func SetBackend(venue, backend, live string) {
-	regMu.Lock()
-	defer regMu.Unlock()
-	m, ok := metas[venue]
-	if !ok {
-		return
-	}
-	m.Backend = backend
-	if live != "" {
-		m.Live = live
-	}
-	metas[venue] = m
-}
-
-// Open constructs a driver by venue name.
+// Open builds the driver for cfg.Venue.
 func Open(cfg Config) (Exchange, error) {
-	regMu.RLock()
-	f, ok := ctors[cfg.Venue]
-	regMu.RUnlock()
+	mu.RLock()
+	f, ok := factories[cfg.Venue]
+	mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("exchangex: unknown venue %q (run: cuwan exchange venues)", cfg.Venue)
+		return nil, fmt.Errorf("exchangex: unknown venue %q (binance or hyperliquid)", cfg.Venue)
 	}
 	return f(cfg)
 }
 
-// Has reports whether venue is registered.
-func Has(venue string) bool {
-	regMu.RLock()
-	defer regMu.RUnlock()
-	_, ok := ctors[venue]
-	return ok
-}
-
-// Lookup returns venue metadata.
-func Lookup(venue string) (VenueInfo, bool) {
-	regMu.RLock()
-	defer regMu.RUnlock()
-	m, ok := metas[venue]
-	return m, ok
-}
-
-// Venues returns all registered venues sorted by id.
-func Venues() []VenueInfo {
-	regMu.RLock()
-	defer regMu.RUnlock()
-	out := make([]VenueInfo, 0, len(metas))
-	for _, m := range metas {
-		out = append(out, m)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
-}
-
-// VenueCount returns the number of registered venue ids.
-func VenueCount() int {
-	regMu.RLock()
-	defer regMu.RUnlock()
-	return len(metas)
-}
+// TestnetOnly reports whether a venue may only trade on its testnet.
+// Hyperliquid stays testnet-only until its testnet run is recorded.
+func TestnetOnly(venue string) bool { return venue == "hyperliquid" }

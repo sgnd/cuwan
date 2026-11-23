@@ -1,495 +1,293 @@
-// Package store keeps cuwan inventory (exchanges, bots, settings, runtime)
-// in the sealed store under $CUWAN_HOME (default ~/.cuwan).
+// Package store keeps cuwan's whole local state in one sealed file.
+//
+// The file is an 8-byte generation followed by the state sealed with
+// AES-256-GCM (sealrow), bound to that generation. Every save raises the
+// generation, so a changed generation does not open. Audit entries are
+// chained by SHA-256, so a changed or dropped entry is found. A lock file
+// makes every read-change-write one step across processes.
+//
+// Not covered: someone who can write the folder may put back a whole older
+// file. That file opens, at its older generation.
 package store
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
-	"github.com/sgnd/cuwan/internal/home"
-	"github.com/sgnd/cuwan/internal/sealdb"
 	"github.com/sgnd/cuwan/internal/sealrow"
 )
 
-var (
-	ErrNoStore  = errors.New("store: no sealed store yet; run cuwan doctor or set a secret first")
-	ErrExists   = errors.New("store: already exists")
-	ErrNotFound = errors.New("store: not found")
+const (
+	fileName = "store.sealed"
+	lockName = "store.lock"
+	genLen   = 8
 )
 
-// KeySource loads or creates the master key. Set by package vault.
-var KeySource func(meta map[string]string, create bool) ([]byte, map[string]string, error)
-
 var (
-	mu   sync.Mutex
-	open *sealdb.DB
+	// ErrOpen means the store does not open: wrong key, damaged, or changed.
+	ErrOpen = errors.New("store: the store does not open (wrong key, damaged, or changed)")
+	// ErrTampered means the audit chain is broken.
+	ErrTampered = errors.New("store: the audit log was changed")
 )
 
-// EnsureHome creates ~/.cuwan with mode 0700.
-func EnsureHome() error {
-	_, err := home.Ensure()
-	return err
+// State is everything cuwan keeps. Maps are keyed by name, so a name is
+// stored once.
+type State struct {
+	Gen       uint64              `json:"gen"`
+	Secrets   map[string]string   `json:"secrets"`
+	Exchanges map[string]Exchange `json:"exchanges"`
+	Bots      map[string]Bot      `json:"bots"`
+	Runtimes  map[string]Runtime  `json:"runtimes"` // by bot name: one per bot
+	Audit     []Entry             `json:"audit"`
 }
 
-// Path joins under CUWAN_HOME.
-func Path(name string) string {
-	d, err := home.Dir()
-	if err != nil {
-		return filepath.Join(".cuwan", name)
-	}
-	if name == "" {
-		return d
-	}
-	return filepath.Join(d, name)
+// Exchange is one venue account.
+type Exchange struct {
+	Name      string    `json:"name"`
+	Venue     string    `json:"venue"`  // binance | hyperliquid
+	Market    string    `json:"market"` // spot | usdm | perp
+	Secret    string    `json:"secret"` // name of the secret holding the key
+	Testnet   bool      `json:"testnet"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-// DBPath is the sealed SQLite file.
-func DBPath() string { return Path("store.db") }
+// Bot is one grid bot.
+type Bot struct {
+	Name        string  `json:"name"`
+	Exchange    string  `json:"exchange"`
+	Symbol      string  `json:"symbol"`
+	Lower       float64 `json:"lower"`
+	Upper       float64 `json:"upper"`
+	Levels      int     `json:"levels"`
+	OrderSize   float64 `json:"order_size,omitempty"`   // base asset per order
+	QuoteAmount float64 `json:"quote_amount,omitempty"` // quote asset per order
+	Leverage    float64 `json:"leverage,omitempty"`     // futures only, 1 to 20
+	Futures     bool    `json:"-"`                      // never stored: set from the exchange market on load
+	OnExit      string  `json:"on_exit,omitempty"`      // stop | pause | trail
+	TakeProfit  float64 `json:"take_profit,omitempty"`
+	StopLoss    float64 `json:"stop_loss,omitempty"`
+}
 
-// DB opens (or returns) the sealed store. create makes it when missing.
-func DB(create bool) (*sealdb.DB, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	if open != nil {
-		return open, nil
-	}
-	if err := EnsureHome(); err != nil {
-		return nil, err
-	}
-	path := DBPath()
-	meta, err := sealdb.Peek(context.Background(), path)
-	if errors.Is(err, os.ErrNotExist) {
-		if !create {
-			return nil, ErrNoStore
-		}
-		if KeySource == nil {
-			return nil, errors.New("store: no key source configured")
-		}
-		master, newMeta, err := KeySource(nil, true)
-		if err != nil {
-			return nil, err
-		}
-		defer clear(master)
-		key, err := sealrow.NewKey(master)
-		if err != nil {
-			return nil, err
-		}
-		d, err := sealdb.Open(context.Background(), path, key)
-		if err != nil {
-			return nil, err
-		}
-		err = d.Update(context.Background(), func(tx *sealdb.Tx) error {
-			for k, v := range newMeta {
-				if err := tx.SetMeta(k, v); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			d.Close()
-			return nil, err
-		}
-		open = d
-		return d, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if KeySource == nil {
-		return nil, errors.New("store: no key source configured")
-	}
-	master, _, err := KeySource(meta, false)
-	if err != nil {
-		return nil, err
-	}
-	defer clear(master)
+// Runtime is a live bot's saved state, for restart and stop.
+type Runtime struct {
+	Bot       string            `json:"bot"`
+	Status    string            `json:"status"` // running | unguarded | halted | stopped
+	Orders    []Order           `json:"orders,omitempty"`
+	StartedAt time.Time         `json:"started_at"`
+	Meta      map[string]string `json:"meta,omitempty"`
+}
+
+// Order is one order a bot sent or is about to send.
+type Order struct {
+	ClientOID  string    `json:"client_oid"`
+	ExchangeID string    `json:"exchange_id,omitempty"`
+	Side       string    `json:"side"`
+	Price      float64   `json:"price"`
+	Qty        float64   `json:"qty"`
+	Filled     float64   `json:"filled,omitempty"`
+	ReduceOnly bool      `json:"reduce_only,omitempty"`
+	Close      bool      `json:"close,omitempty"` // a flatten order, not a grid order
+	Status     string    `json:"status"`
+	SentAt     time.Time `json:"sent_at"`
+	Misses     int       `json:"misses,omitempty"`
+	Parent     string    `json:"parent,omitempty"`
+	Countered  bool      `json:"countered,omitempty"`
+}
+
+// Entry is one audit entry. Sum covers Seq, Time, Data and the previous Sum.
+type Entry struct {
+	Seq  int64           `json:"seq"`
+	Time time.Time       `json:"time"`
+	Data json.RawMessage `json:"data"`
+	Sum  []byte          `json:"sum"`
+}
+
+// Store is the sealed file in one folder.
+type Store struct {
+	dir string
+	key *sealrow.Key
+}
+
+// Open uses dir (made private, 0700) and the 32-byte master key.
+func Open(dir string, master []byte) (*Store, error) {
 	key, err := sealrow.NewKey(master)
 	if err != nil {
 		return nil, err
 	}
-	d, err := sealdb.Open(context.Background(), path, key)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- a folder needs the x bit; 0700 is owner only
+		return nil, err
+	}
+	return &Store{dir: dir, key: key}, nil
+}
+
+// Exists reports whether the store file is there.
+func Exists(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, fileName))
+	return err == nil
+}
+
+// View reads the state.
+func (s *Store) View(fn func(*State) error) error {
+	unlock, err := lock(filepath.Join(s.dir, lockName))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	st, err := s.load()
+	if err != nil {
+		return err
+	}
+	return fn(st)
+}
+
+// Update reads the state, lets fn change it, and saves it at the next
+// generation, all under the lock. Nothing is saved when fn fails.
+func (s *Store) Update(fn func(*State) error) error {
+	unlock, err := lock(filepath.Join(s.dir, lockName))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	st, err := s.load()
+	if err != nil {
+		return err
+	}
+	if err := fn(st); err != nil {
+		return err
+	}
+	st.Gen++
+	return s.save(st)
+}
+
+func row(gen uint64) sealrow.Row {
+	return sealrow.Row{ID: "cuwan", Type: "state", Version: gen}
+}
+
+func (s *Store) load() (*State, error) {
+	b, err := os.ReadFile(filepath.Join(s.dir, fileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return fill(&State{}), nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	open = d
-	return d, nil
-}
-
-// CloseDB closes a cached handle (tests).
-func CloseDB() {
-	mu.Lock()
-	defer mu.Unlock()
-	if open != nil {
-		_ = open.Close()
-		open = nil
+	if len(b) < genLen {
+		return nil, ErrOpen
 	}
-}
-
-// ResetForTest closes and forgets the store handle.
-func ResetForTest() { CloseDB() }
-
-func clear(b []byte) {
-	for i := range b {
-		b[i] = 0
+	gen := binary.BigEndian.Uint64(b[:genLen])
+	plain, err := s.key.Open(row(gen), b[genLen:])
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrOpen, err)
 	}
+	st := &State{}
+	if err := json.Unmarshal(plain, st); err != nil || st.Gen != gen {
+		return nil, ErrOpen
+	}
+	if err := VerifyAudit(st.Audit); err != nil {
+		return nil, err
+	}
+	return fill(st), nil
 }
 
-// Rekey reseals the store under a new master and updates meta.
-func Rekey(newMaster []byte, newMeta map[string]string, then func(*sealdb.Tx) error) error {
-	d, err := DB(false)
+func fill(st *State) *State {
+	if st.Secrets == nil {
+		st.Secrets = map[string]string{}
+	}
+	if st.Exchanges == nil {
+		st.Exchanges = map[string]Exchange{}
+	}
+	if st.Bots == nil {
+		st.Bots = map[string]Bot{}
+	}
+	if st.Runtimes == nil {
+		st.Runtimes = map[string]Runtime{}
+	}
+	return st
+}
+
+func (s *Store) save(st *State) error {
+	plain, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
-	newKey, err := sealrow.NewKey(newMaster)
+	sealed, err := s.key.Seal(row(st.Gen), plain)
 	if err != nil {
 		return err
 	}
-	return d.Rekey(context.Background(), newKey, func(tx *sealdb.Tx) error {
-		for k, v := range newMeta {
-			if err := tx.SetMeta(k, v); err != nil {
-				return err
-			}
-		}
-		if then != nil {
-			return then(tx)
-		}
-		return nil
-	})
-}
-
-// SetStoreMeta writes readable meta keys.
-func SetStoreMeta(m map[string]string) error {
-	d, err := DB(false)
+	out := make([]byte, genLen, genLen+len(sealed))
+	binary.BigEndian.PutUint64(out, st.Gen)
+	out = append(out, sealed...)
+	tmp, err := os.CreateTemp(s.dir, ".store-*")
 	if err != nil {
 		return err
 	}
-	return d.Update(context.Background(), func(tx *sealdb.Tx) error {
-		for k, v := range m {
-			if err := tx.SetMeta(k, v); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// WriteFileAtomic writes path with mode, refusing world-readable modes.
-func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
-	if mode&0o077 != 0 {
-		return fmt.Errorf("store: refusing world/group-readable mode %o", mode)
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
+	defer os.Remove(tmp.Name()) // no-op after the rename
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return os.Rename(tmp.Name(), filepath.Join(s.dir, fileName))
 }
 
-// RefuseWorldReadable fails if path is group/world readable.
-func RefuseWorldReadable(path string) error {
-	st, err := os.Stat(path)
+// Append adds an audit entry chained to the one before it.
+func (st *State) Append(data any) error {
+	b, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	if st.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("store: %s is group/world-readable (%o); fix permissions", path, st.Mode().Perm())
+	var prev []byte
+	if n := len(st.Audit); n > 0 {
+		prev = st.Audit[n-1].Sum
 	}
+	e := Entry{Seq: int64(len(st.Audit)) + 1, Time: time.Now().UTC(), Data: b}
+	e.Sum = sum(prev, e)
+	st.Audit = append(st.Audit, e)
 	return nil
 }
 
-// --- inventory types ---
-
-const (
-	TypeExchange = "exchange"
-	TypeBot      = "bot"
-	TypeRuntime  = "runtime"
-	TypeSetting  = "setting"
-)
-
-// Exchange is a venue credential reference.
-type Exchange struct {
-	Name      string    `json:"name"`
-	Venue     string    `json:"venue"`      // registered id (cuwan exchange venues)
-	Market    string    `json:"market"`     // spot | usdm | perp
-	SecretRef string    `json:"secret_ref"` // secret:NAME
-	Testnet   bool      `json:"testnet,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	ID        string    `json:"-"`
+func sum(prev []byte, e Entry) []byte {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(e.Seq)) // #nosec G115 -- Seq starts at 1 and only grows
+	return sumParts(prev, n[:], []byte(e.Time.UTC().Format(time.RFC3339Nano)), e.Data)
 }
 
-// Bot is a grid bot config. Guardrails are always enforced by the engine.
-type Bot struct {
-	Name        string    `json:"name"`
-	Exchange    string    `json:"exchange"`
-	Symbol      string    `json:"symbol"`
-	Lower       float64   `json:"lower"`
-	Upper       float64   `json:"upper"`
-	Levels      int       `json:"levels"`
-	OrderSize   float64   `json:"order_size"`
-	Leverage    float64   `json:"leverage,omitempty"` // futures; capped at 20
-	QuoteAmount float64   `json:"quote_amount,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	ID          string    `json:"-"`
-}
-
-// RuntimeState is sealed crash-recovery state for a running bot.
-type RuntimeState struct {
-	BotName   string            `json:"bot_name"`
-	Mode      string            `json:"mode"`   // paper | live
-	Status    string            `json:"status"` // running | stopped
-	Orders    []RuntimeOrder    `json:"orders,omitempty"`
-	StartedAt time.Time         `json:"started_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
-	Meta      map[string]string `json:"meta,omitempty"`
-	ID        string            `json:"-"`
-}
-
-// RuntimeOrder is one tracked order for restart reconcile.
-type RuntimeOrder struct {
-	ClientOID  string  `json:"client_oid"`
-	ExchangeID string  `json:"exchange_id,omitempty"`
-	Side       string  `json:"side"`
-	Price      float64 `json:"price"`
-	Qty        float64 `json:"qty"`
-	Filled     float64 `json:"filled,omitempty"`
-	ReduceOnly bool    `json:"reduce_only,omitempty"`
-	Status     string  `json:"status"`
-	// SentAt and Misses track a pending order the venue did not know yet.
-	SentAt time.Time `json:"sent_at,omitempty"`
-	Misses int       `json:"misses,omitempty"`
-	// Parent is the client order ID of the grid order this one counters.
-	Parent string `json:"parent,omitempty"`
-	// Countered is set on a filled grid order once its counter order is sent.
-	Countered bool `json:"countered,omitempty"`
-}
-
-func putJSON(typ, id string, v any) (string, error) {
-	d, err := DB(true)
-	if err != nil {
-		return "", err
+// sumParts hashes each part with its length in front, so bytes cannot move
+// from one part to the next without changing the sum.
+func sumParts(parts ...[]byte) []byte {
+	h := sha256.New()
+	var l [8]byte
+	for _, p := range parts {
+		binary.BigEndian.PutUint64(l[:], uint64(len(p)))
+		h.Write(l[:])
+		h.Write(p)
 	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	var outID string
-	err = d.Update(context.Background(), func(tx *sealdb.Tx) error {
-		r, err := tx.Put(typ, id, b)
-		outID = r.ID
-		return err
-	})
-	return outID, err
+	return h.Sum(nil)
 }
 
-func listJSON[T any](typ string, bind func(*T, sealdb.Record)) ([]T, error) {
-	d, err := DB(false)
-	if err != nil {
-		return nil, err
-	}
-	var out []T
-	err = d.View(context.Background(), func(tx *sealdb.Tx) error {
-		rows, err := tx.List(typ)
-		if err != nil {
-			return err
+// VerifyAudit checks the numbering and the chain of entries.
+func VerifyAudit(entries []Entry) error {
+	var prev []byte
+	for i, e := range entries {
+		if e.Seq != int64(i)+1 || string(sum(prev, e)) != string(e.Sum) {
+			return fmt.Errorf("%w at entry %d", ErrTampered, i+1)
 		}
-		for _, r := range rows {
-			var v T
-			if err := json.Unmarshal(r.Data, &v); err != nil {
-				return err
-			}
-			bind(&v, r)
-			out = append(out, v)
-		}
-		return nil
-	})
-	return out, err
-}
-
-// PutExchange stores or updates an exchange.
-func PutExchange(e *Exchange) error {
-	now := time.Now().UTC()
-	if e.CreatedAt.IsZero() {
-		e.CreatedAt = now
+		prev = e.Sum
 	}
-	e.UpdatedAt = now
-	existing, _ := GetExchange(e.Name)
-	id := ""
-	if existing != nil {
-		id = existing.ID
-	}
-	outID, err := putJSON(TypeExchange, id, e)
-	e.ID = outID
-	return err
-}
-
-// GetExchange by name.
-func GetExchange(name string) (*Exchange, error) {
-	all, err := ListExchanges()
-	if err != nil {
-		return nil, err
-	}
-	for i := range all {
-		if all[i].Name == name {
-			return &all[i], nil
-		}
-	}
-	return nil, ErrNotFound
-}
-
-// ListExchanges returns all exchanges.
-func ListExchanges() ([]Exchange, error) {
-	return listJSON(TypeExchange, func(e *Exchange, r sealdb.Record) { e.ID = r.ID })
-}
-
-// PutBot stores or updates a bot.
-func PutBot(b *Bot) error {
-	now := time.Now().UTC()
-	if b.CreatedAt.IsZero() {
-		b.CreatedAt = now
-	}
-	b.UpdatedAt = now
-	existing, _ := GetBot(b.Name)
-	id := ""
-	if existing != nil {
-		id = existing.ID
-	}
-	outID, err := putJSON(TypeBot, id, b)
-	b.ID = outID
-	return err
-}
-
-// GetBot by name.
-func GetBot(name string) (*Bot, error) {
-	all, err := ListBots()
-	if err != nil {
-		return nil, err
-	}
-	for i := range all {
-		if all[i].Name == name {
-			return &all[i], nil
-		}
-	}
-	return nil, ErrNotFound
-}
-
-// ListBots returns all bots.
-func ListBots() ([]Bot, error) {
-	return listJSON(TypeBot, func(b *Bot, r sealdb.Record) { b.ID = r.ID })
-}
-
-// DeleteBot removes a bot by name.
-func DeleteBot(name string) error {
-	b, err := GetBot(name)
-	if err != nil {
-		return err
-	}
-	d, err := DB(false)
-	if err != nil {
-		return err
-	}
-	return d.Update(context.Background(), func(tx *sealdb.Tx) error {
-		return tx.Delete(b.ID)
-	})
-}
-
-// PutRuntime saves sealed runtime state.
-func PutRuntime(rt *RuntimeState) error {
-	now := time.Now().UTC()
-	if rt.StartedAt.IsZero() {
-		rt.StartedAt = now
-	}
-	rt.UpdatedAt = now
-	existing, _ := GetRuntime(rt.BotName)
-	id := ""
-	if existing != nil {
-		id = existing.ID
-	}
-	outID, err := putJSON(TypeRuntime, id, rt)
-	rt.ID = outID
-	return err
-}
-
-// GetRuntime by bot name.
-func GetRuntime(botName string) (*RuntimeState, error) {
-	all, err := ListRuntimes()
-	if err != nil {
-		return nil, err
-	}
-	for i := range all {
-		if all[i].BotName == botName {
-			return &all[i], nil
-		}
-	}
-	return nil, ErrNotFound
-}
-
-// ListRuntimes returns all runtime states.
-func ListRuntimes() ([]RuntimeState, error) {
-	return listJSON(TypeRuntime, func(rt *RuntimeState, r sealdb.Record) { rt.ID = r.ID })
-}
-
-// AppendAudit writes a local action log entry.
-func AppendAudit(action string, detail map[string]any) error {
-	d, err := DB(true)
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(map[string]any{
-		"time":   time.Now().UTC(),
-		"action": action,
-		"detail": detail,
-	})
-	if err != nil {
-		return err
-	}
-	return d.Update(context.Background(), func(tx *sealdb.Tx) error {
-		return tx.AppendAudit(payload)
-	})
-}
-
-// ListAudit returns recent audit entries as raw JSON.
-func ListAudit(limit int) ([]json.RawMessage, error) {
-	d, err := DB(false)
-	if err != nil {
-		return nil, err
-	}
-	var out []json.RawMessage
-	err = d.View(context.Background(), func(tx *sealdb.Tx) error {
-		rows, err := tx.ListAudit(limit)
-		if err != nil {
-			return err
-		}
-		for _, r := range rows {
-			out = append(out, json.RawMessage(r))
-		}
-		return nil
-	})
-	return out, err
+	return nil
 }

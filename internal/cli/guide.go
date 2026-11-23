@@ -3,69 +3,74 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
+	"github.com/sgnd/cuwan/internal/live"
 	"github.com/sgnd/cuwan/internal/out"
+	"github.com/sgnd/cuwan/internal/store"
 )
 
 const guideText = `cuwan agent playbook
 
-1. Set CUWAN_AGENT=1. Never prompt; missing flags are errors.
-2. Run cuwan schema for JSON shapes; cuwan doctor for home/store.
-3. Secrets: echo -n VALUE | cuwan secret set NAME
-   Never put secrets on argv. Output shows [hidden] / [secret:NAME].
-4. Venues: cuwan exchange venues. Live: binance; hyperliquid on testnet only; the rest are catalog entries.
-   Exchange: cuwan exchange add NAME --venue ID --secret secret:NAME --market spot|usdm|perp
-5. Bot: cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N [--leverage N]
-   Futures leverage is capped at 20x; ~5% preventive close is always on.
-6. Paper (no signed orders): cuwan paper start NAME
-   Detaches a worker; status/stop talk to sealed runtime. Restart resumes open orders.
-7. Live needs a human --yes confirm. Agents must not invent --yes.
-8. Destructive stop/flatten/rm require --yes from a person.
-9. Do not read ~/.cuwan by hand; do not change CUWAN_HOME for the user.
-`
+1. Set CUWAN_AGENT=1: JSON out, no prompts, a missing yes is an error.
+2. cuwan schema lists every command; cuwan doctor checks the folder and the key store.
+3. Secrets come from stdin only: printf '%s' "$KEY:$SECRET" | cuwan secret set NAME.
+   Output shows [hidden] and [secret:NAME], never a value.
+4. Venues: binance (spot, usdm) live; hyperliquid (perp) on --testnet only.
+   cuwan exchange add NAME --venue binance --market usdm --secret NAME --testnet (or --live)
+5. Bots need a size: --order-size (base asset) or --quote-amount (quote asset).
+   cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N --order-size N
+   Range exits: --on-exit stop|pause|trail (pause is the default), --take-profit, --stop-loss.
+6. Leverage is capped at 20x. The preventive close before liquidation is always on.
+7. cuwan run start NAME --dry-run is always allowed. A live start, run stop and rm need
+   a person who types the yes at their terminal. An agent gets NEEDS_PERSON with the
+   command to show the person; --yes does not change that.
+   A futures exchange needs --leverage, a whole number from 1 to 20.
+8. cuwan guide install --project (or --dry-run) adds the skill for agents; the home-wide
+   install is for a person.`
 
 func cmdGuide(args []string) int {
-	out.Print(os.Stdout, "guide", map[string]string{"text": strings.TrimSpace(guideText)}, strings.TrimSpace(guideText))
+	if len(args) > 0 {
+		return out.Fail("guide", fmt.Errorf("unknown verb %q", args[0]), 2, "cuwan guide install")
+	}
+	out.Print(os.Stdout, "guide", map[string]string{"text": guideText}, guideText)
+	return 0
+}
+
+func cmdVersion(args []string) int {
+	out.Print(os.Stdout, "version", map[string]string{"version": Version, "go": runtime.Version()}, "cuwan "+Version)
 	return 0
 }
 
 func cmdSchema(args []string) int {
-	schema := map[string]any{
-		"envelope": map[string]any{
-			"ok":      "bool",
-			"command": "string",
-			"data":    "object|array",
-			"error":   "string",
-			"hints":   "string[]",
-		},
-		"commands": []string{
-			"version", "doctor", "guide", "schema",
-			"secret.set", "secret.list", "secret.show", "secret.rename",
-			"exchange.add", "exchange.list", "exchange.venues", "exchange.test",
-			"bot.add", "bot.list", "bot.show", "bot.edit", "bot.rm",
-			"paper.start", "paper.status", "paper.stop", "backtest",
-			"run.start", "run.status", "run.stop",
-			"orders", "positions", "balance", "audit", "report",
-		},
-		"secret_display": []string{"[hidden]", "[secret:NAME]"},
-		"guardrails": map[string]any{
-			"max_leverage":         20,
-			"preventive_close_pct": 0.05,
-			"disable_flag":         false,
-		},
+	s := map[string]any{
+		"envelope": map[string]string{"ok": "bool", "command": "string", "data": "object|array", "error": "string", "hints": "string[]"},
+		"commands": Commands(),
+		"guards":   map[string]any{"max_leverage": live.MaxLeverage, "preventive_close": "always on", "switch": false},
+		"secrets":  []string{"[hidden]", "[secret:NAME]"},
 	}
-	if out.Agent() {
-		out.Print(os.Stdout, "schema", schema, "")
-		return 0
+	out.Print(os.Stdout, "schema", s, strings.Join(Commands(), "\n"))
+	return 0
+}
+
+// cmdDoctor checks the folder and that the store opens with the key.
+func cmdDoctor(args []string) int {
+	dir, err := home()
+	if err != nil {
+		return out.Fail("doctor", err, 1)
 	}
-	fmt.Fprintln(os.Stdout, `{
-  "ok": true,
-  "command": "schema",
-  "data": {
-    "envelope": {"ok":"bool","command":"string","data":"object","error":"string","hints":"string[]"},
-    "guardrails": {"max_leverage":20,"preventive_close_pct":0.05}
-  }
-}`)
+	d := map[string]any{"home": dir, "store": "missing (made on the first write)", "key_store": "not checked"}
+	if store.Exists(dir) {
+		e, err := newEnv()
+		if err == nil {
+			err = e.st.View(func(*store.State) error { return nil })
+		}
+		if err != nil {
+			return out.Fail("doctor", fmt.Errorf("the store does not open: %w", err), 1)
+		}
+		d["store"], d["key_store"] = "opens", "ok"
+	}
+	out.Print(os.Stdout, "doctor", d, fmt.Sprintf("home: %s\nstore: %s\nkey store: %s", d["home"], d["store"], d["key_store"]))
 	return 0
 }

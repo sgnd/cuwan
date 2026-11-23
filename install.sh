@@ -13,10 +13,9 @@ os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$os" in
   linux | darwin) ;;
   mingw* | msys* | cygwin*)
-    echo "This installer is for Linux and macOS. On Windows, download" >&2
-    echo "cuwan_windows_amd64.zip from https://github.com/$REPO/releases." >&2
+    echo "cuwan runs on macOS and Linux; Windows waits for a key store backend." >&2
     exit 1 ;;
-  *) echo "cuwan supports Linux, macOS and Windows; there is no release for $os." >&2; exit 1 ;;
+  *) echo "cuwan supports macOS and Linux; there is no release for $os." >&2; exit 1 ;;
 esac
 
 case "$(uname -m)" in
@@ -54,6 +53,17 @@ url="https://github.com/$REPO/releases/download/${ver}/${asset}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$url" -o "$tmp/$asset"
+curl -fsSL "https://github.com/$REPO/releases/download/${ver}/checksums.txt" -o "$tmp/checksums.txt"
+want=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/checksums.txt")
+if command -v sha256sum >/dev/null 2>&1; then
+  got=$(sha256sum "$tmp/$asset" | awk '{ print $1 }')
+else
+  got=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
+fi
+if [ -z "$want" ] || [ "$want" != "$got" ]; then
+  echo "cuwan: the checksum of $asset does not match checksums.txt; nothing was installed." >&2
+  exit 1
+fi
 tar -xzf "$tmp/$asset" -C "$tmp"
 install -m 755 "$tmp/cuwan" "$dir/cuwan"
 echo "Installed cuwan to $dir/cuwan"

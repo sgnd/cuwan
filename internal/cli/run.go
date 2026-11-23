@@ -6,193 +6,227 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
-	"github.com/sgnd/cuwan/internal/grid"
 	"github.com/sgnd/cuwan/internal/live"
 	"github.com/sgnd/cuwan/internal/out"
-	"github.com/sgnd/cuwan/internal/risk"
 	"github.com/sgnd/cuwan/internal/store"
 )
 
-func cmdRun(args []string) int {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stdout, "usage: cuwan run start|status|stop NAME")
-		return 0
-	}
-	switch args[0] {
-	case "start":
-		return runStart(args[1:])
-	case "status":
-		return runStatus(args[1:])
-	case "stop":
-		return runStop(args[1:])
-	default:
-		return out.Fail("run", fmt.Errorf("unknown verb %q", args[0]), 2)
+// startLoop is a seam so tests skip the blocking loop.
+var startLoop = runLoop
+
+// runEvery is the loop interval.
+var runEvery = 5 * time.Second
+
+// maxStepErrors failed steps in a row halt the bot.
+const maxStepErrors = 6
+
+// stopWait is how long `run stop` waits for a running loop to let go.
+var stopWait = 60 * time.Second
+
+// bot loads a bot with its futures flag set from its exchange's market. fit
+// is the error when the bot's leverage does not fit that market.
+func (e *env) bot(name string) (b store.Bot, fit error, err error) {
+	err = e.st.View(func(s *store.State) error {
+		var ok bool
+		if b, ok = s.Bots[name]; !ok {
+			return fmt.Errorf("no bot %q", name)
+		}
+		x, ok := s.Exchanges[b.Exchange]
+		if !ok {
+			return fmt.Errorf("bot %s uses exchange %q, which does not exist", name, b.Exchange)
+		}
+		fit = fitMarket(&b, x)
+		return nil
+	})
+	return b, fit, err
+}
+
+// saver writes the runtime back into the store.
+func (e *env) saver(rt *store.Runtime) live.Saver {
+	return func() error {
+		return e.st.Update(func(s *store.State) error { s.Runtimes[rt.Bot] = *rt; return nil })
 	}
 }
 
 func runStart(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("run.start", fmt.Errorf("usage: cuwan run start NAME [--yes] [--dry-run] [--foreground]"), 2)
+	f, err := parse(args, nil, []string{"yes", "dry-run"})
+	if err == nil {
+		_, err = needOne(f, "cuwan run start NAME [--dry-run] [--yes]")
 	}
-	dry := flagBool(args, "--dry-run")
-	bot, err := store.GetBot(pos[0])
 	if err != nil {
-		return out.Fail("run.start", err, 1)
+		return out.Fail("run.start", err, 2)
 	}
-	exRec, drv, err := openExchange(bot.Exchange, dry)
-	if err != nil {
-		return out.Fail("run.start", err, 1)
-	}
+	return withEnv("run.start", func(e *env) int { return start(e, f) })
+}
+
+func start(e *env, f *flags) int {
 	ctx := context.Background()
-	if !dry {
-		if err := live.CanRun(drv); err != nil {
-			return out.Fail("run.start", err, 1)
-		}
-		// A venue not yet proven end to end may only trade on its testnet.
-		if info, ok := exchangex.Lookup(exRec.Venue); !ok || (info.Live != "full" && !exRec.Testnet) {
-			return out.Fail("run.start", fmt.Errorf("venue %s is %q for live use; run it with --testnet until it is proven", exRec.Venue, info.Live), 1)
-		}
-		// Fail closed: a live run needs a key proven unable to withdraw.
-		perms, err := drv.Permissions(ctx)
-		if err != nil {
-			return out.Fail("run.start", fmt.Errorf("refusing live run: cannot check API key permissions: %w", err), 1)
-		}
-		if perms.CanWithdraw {
-			return out.Fail("run.start", fmt.Errorf("refusing live run: API key appears withdrawal-capable"), 1)
-		}
-	}
-	if bot.Leverage > 0 {
-		bot.Leverage, _ = risk.CapLeverage(bot.Leverage)
-	}
-	plan, err := grid.Build(bot.Lower, bot.Upper, bot.Levels)
+	bot, fit, err := e.bot(f.pos[0])
 	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
-	ticker, err := drv.Ticker(ctx, bot.Symbol)
+	if fit != nil {
+		return out.Fail("run.start", fmt.Errorf("bot %s does not fit its exchange: %w; remove it and run `cuwan bot add` again", bot.Name, fit), 1)
+	}
+	x, drv, err := e.driver(bot.Exchange)
 	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
-	if bot.Leverage > 0 {
-		d := risk.CheckFutures((bot.Lower+bot.Upper)/2, ticker.Price, bot.Leverage, "buy")
-		if d.Preventive {
-			return out.Fail("run.start", fmt.Errorf("%s", d.BlockReason), 1)
-		}
+	t, err := drv.Ticker(ctx, bot.Symbol)
+	if err != nil {
+		return out.Fail("run.start", err, 1)
 	}
-	if dry {
-		rt := &store.RuntimeState{BotName: bot.Name, Mode: "dry-run", Status: "dry-run", StartedAt: time.Now().UTC(),
-			Meta: map[string]string{"last_price": fmt.Sprintf("%g", ticker.Price)}}
-		for _, px := range plan.Prices {
-			side := grid.LevelSide(px, ticker.Price)
-			rt.Orders = append(rt.Orders, store.RuntimeOrder{Side: side, Price: px, Qty: bot.OrderSize, Status: "dry-run"})
-		}
-		out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("dry run %s orders=%d (nothing sent)", bot.Name, len(rt.Orders)))
-		return 0
+	if f.set["dry-run"] {
+		return dryRun(&bot, t.Price)
 	}
-	// The guards run only inside the loop, so a live bot must have one.
-	if !flagBool(args, "--foreground") {
-		return out.Fail("run.start", fmt.Errorf("live runs need --foreground (the preventive close and loss guard run only while the loop runs; a detached worker is planned)"), 2)
+	if exchangex.TestnetOnly(x.Venue) && !x.Testnet {
+		return out.Fail("run.start", fmt.Errorf("%s runs on its testnet only until its testnet run is recorded; add the exchange with --testnet", x.Venue), 1)
 	}
-	if out.Agent() && !flagBool(args, "--yes") {
-		return out.Fail("run.start", fmt.Errorf("live trading requires a person confirm; pass --yes only when a human approved"), 1)
+	size := fmt.Sprintf("%g per order", bot.OrderSize)
+	if bot.OrderSize == 0 {
+		size = fmt.Sprintf("%g quote per order", bot.QuoteAmount)
 	}
-	if !flagBool(args, "--yes") {
-		msg := fmt.Sprintf("place %d live grid orders for %s on %s at mid≈%g?", len(plan.Prices), bot.Name, exRec.Venue, ticker.Price)
-		if !confirm(msg) {
-			return out.Fail("run.start", fmt.Errorf("aborted"), 1)
-		}
+	lev := "spot"
+	if bot.Futures {
+		lev = fmt.Sprintf("%gx futures", live.CapLeverage(bot.Leverage))
 	}
-	lock, err := live.TryLock(bot.Name)
+	q := fmt.Sprintf("start live bot %s on %s (%s, %s, %s, %d levels %g-%g) at about %g?",
+		bot.Name, x.Name, x.Venue, lev, size, bot.Levels, bot.Lower, bot.Upper, t.Price)
+	if err := confirm(f, "cuwan run start "+bot.Name, q); err != nil {
+		return out.Fail("run.start", err, 1)
+	}
+	// Fail closed: a live run needs a key proven unable to withdraw.
+	p, err := drv.Permissions(ctx)
+	if err != nil {
+		return out.Fail("run.start", fmt.Errorf("refusing: cannot check the key's permissions: %w", err), 1)
+	}
+	if p.CanWithdraw {
+		return out.Fail("run.start", errors.New("refusing: the key can withdraw or transfer funds"), 1)
+	}
+	lock, err := live.TryLock(e.dir, bot.Name)
 	if err != nil {
 		return out.Fail("run.start", err, 1)
 	}
 	defer lock.Unlock()
-	live.ClearStop(bot.Name)
-	// Never drop a runtime that may still have orders on the book.
-	if prev, err := store.GetRuntime(bot.Name); err == nil && prev.Mode == "live" && prev.Status != "stopped" {
-		return out.Fail("run.start", fmt.Errorf("bot %s has a live runtime in state %q; run `cuwan run stop %s` first", bot.Name, prev.Status, bot.Name), 1)
+	live.ClearStop(e.dir, bot.Name)
+
+	var prev store.Runtime
+	had := false
+	_ = e.st.View(func(s *store.State) error { prev, had = s.Runtimes[bot.Name]; return nil })
+	if had && prev.Status != "stopped" {
+		return resume(e, &bot, drv, &prev)
 	}
-	// Nothing touches the account before the person confirmed.
-	if bot.Leverage > 0 {
-		if err := drv.SetLeverage(ctx, bot.Symbol, bot.Leverage); err != nil {
+	if bot.Futures {
+		if err := drv.SetLeverage(ctx, bot.Symbol, live.CapLeverage(bot.Leverage)); err != nil {
 			return out.Fail("run.start", err, 1)
 		}
 	}
-	rt := &store.RuntimeState{BotName: bot.Name, Mode: "live", Status: "running", StartedAt: time.Now().UTC(),
-		Meta: map[string]string{"last_price": fmt.Sprintf("%g", ticker.Price)}}
-	save := func() error { return store.PutRuntime(rt) }
-	if err := live.PlaceGrid(ctx, bot, drv, rt, save, ticker.Price); err != nil {
-		return halt(ctx, bot, drv, rt, save, "initial grid failed: "+err.Error())
+	rt := &store.Runtime{Bot: bot.Name, Status: "running", StartedAt: time.Now().UTC(), Meta: map[string]string{}}
+	save := e.saver(rt)
+	if err := live.PlaceGrid(ctx, &bot, drv, rt, save, t.Price); err != nil {
+		return halt(e, &bot, drv, rt, "the grid could not be placed: "+err.Error())
 	}
-	_ = store.AppendAudit("run.start", map[string]any{"bot": bot.Name, "orders": len(rt.Orders)})
-	out.Print(os.Stdout, "run.start", rt, fmt.Sprintf("live start %s orders=%d", bot.Name, len(rt.Orders)))
-	return startLoop(bot, drv, rt)
+	if err := e.audit("run.start", map[string]any{"bot": bot.Name, "orders": len(rt.Orders)}); err != nil {
+		return out.Fail("run.start", err, 1)
+	}
+	out.Print(os.Stdout, "run.start", map[string]any{"name": bot.Name, "orders": len(rt.Orders), "resumed": false},
+		fmt.Sprintf("started %s with %d orders; the loop runs until you stop it", bot.Name, len(rt.Orders)))
+	return startLoop(e, &bot, drv, rt)
 }
 
-// startLoop is a seam so CLI tests can skip the blocking loop.
-var startLoop = runLoop
+// resume takes over a running or unguarded runtime by client order ID.
+func resume(e *env, bot *store.Bot, drv exchangex.Exchange, rt *store.Runtime) int {
+	if err := live.Resume(context.Background(), bot, drv, rt, e.saver(rt)); err != nil {
+		return out.Fail("run.start", fmt.Errorf("%w; run `cuwan run stop %s` first", err, bot.Name), 1)
+	}
+	if err := e.audit("run.resume", map[string]any{"bot": bot.Name, "orders": len(rt.Orders)}); err != nil {
+		return out.Fail("run.start", err, 1)
+	}
+	out.Print(os.Stdout, "run.start", map[string]any{"name": bot.Name, "orders": len(rt.Orders), "resumed": true},
+		fmt.Sprintf("resumed %s with %d orders, found again by client order ID", bot.Name, len(rt.Orders)))
+	return startLoop(e, bot, drv, rt)
+}
 
-// runEvery is the live loop interval; tests shorten it.
-var runEvery = 5 * time.Second
+func dryRun(bot *store.Bot, mid float64) int {
+	type planned struct {
+		Side  string  `json:"side"`
+		Price float64 `json:"price"`
+		Qty   float64 `json:"qty"`
+	}
+	var orders []planned
+	step := (bot.Upper - bot.Lower) / float64(bot.Levels-1)
+	for i := 0; i < bot.Levels; i++ {
+		px := bot.Lower + step*float64(i)
+		side := exchangex.SideSell
+		if px < mid {
+			side = exchangex.SideBuy
+		}
+		q, err := live.OrderQty(bot, px)
+		if err != nil {
+			return out.Fail("run.start", err, 1)
+		}
+		orders = append(orders, planned{side, px, q})
+	}
+	out.Print(os.Stdout, "run.start", map[string]any{"name": bot.Name, "dry_run": true, "orders": orders},
+		fmt.Sprintf("dry run %s: %d orders around %g, nothing sent", bot.Name, len(orders), mid))
+	return 0
+}
 
-// maxStepErrors is how many failed steps in a row halt the bot.
-const maxStepErrors = 6
-
-// runLoop steps the live engine while this process holds the bot's lock.
-// It ends on a signal, a stop request from `run stop`, a guard, or too many
-// errors in a row.
-func runLoop(bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState) int {
+// runLoop steps the engine while this process holds the bot's lock. It
+// ends on a signal, a stop request, a stop by the guard or an exit, or too
+// many failed steps in a row.
+func runLoop(e *env, bot *store.Bot, drv exchangex.Exchange, rt *store.Runtime) int {
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP) // HUP: the terminal closed
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sig)
 	tick := time.NewTicker(runEvery)
 	defer tick.Stop()
 	ctx := context.Background()
-	save := func() error { return store.PutRuntime(rt) }
+	save := e.saver(rt)
 	fails := 0
 	for {
 		select {
 		case <-sig:
-			// Orders stay on the book with no guard watching them.
-			rt.Status = "unguarded"
+			rt.Status = "unguarded" // orders stay on the book with no guard watching
 			_ = save()
-			_ = store.AppendAudit("run.signal", map[string]any{"bot": bot.Name})
-			alert(bot.Name, "loop ended by signal; orders are still on the book and unguarded; run `cuwan run stop "+bot.Name+"`")
+			_ = e.audit("run.signal", map[string]any{"bot": bot.Name})
+			alert(bot.Name, "the loop ended by a signal; orders are on the book and unguarded; run `cuwan run start "+bot.Name+"` to resume or `cuwan run stop "+bot.Name+"`")
 			return 0
 		case <-tick.C:
 		}
-		if live.StopRequested(bot.Name) {
-			return 0 // release the lock; `run stop` takes over
+		if live.StopRequested(e.dir, bot.Name) {
+			return 0 // let go of the lock; `run stop` takes over
 		}
 		res, err := live.Step(ctx, bot, drv, rt, save)
 		var ce *live.CloseError
 		if errors.As(err, &ce) {
-			return halt(ctx, bot, drv, rt, save, ce.Error())
+			return halt(e, bot, drv, rt, ce.Error())
 		}
 		if err != nil {
 			fails++
-			_ = store.AppendAudit("run.step_error", map[string]any{"bot": bot.Name, "error": err.Error(), "in_a_row": fails})
+			_ = e.audit("run.step_error", map[string]any{"bot": bot.Name, "error": err.Error(), "in_a_row": fails})
 			if fails >= maxStepErrors {
-				return halt(ctx, bot, drv, rt, save, fmt.Sprintf("%d failed steps in a row, last: %v", fails, err))
+				return halt(e, bot, drv, rt, fmt.Sprintf("%d failed steps in a row, last: %v", fails, err))
 			}
 			continue
 		}
 		fails = 0
 		if res.Stopped {
-			_ = store.AppendAudit("run.guard", map[string]any{"bot": bot.Name, "reason": res.Reason})
+			_ = e.audit("run.stopped", map[string]any{"bot": bot.Name, "reason": res.Reason})
 			alert(bot.Name, res.Reason)
 			return 0
 		}
 	}
 }
 
-// halt cancels what it can, marks the bot halted, and alerts a person.
-func halt(ctx context.Context, bot *store.Bot, drv exchangex.Exchange, rt *store.RuntimeState, save live.Saver, reason string) int {
-	if err := live.CancelAll(ctx, bot, drv, rt, save); err != nil {
+// halt cancels what it can, marks the bot halted, and tells a person.
+func halt(e *env, bot *store.Bot, drv exchangex.Exchange, rt *store.Runtime, reason string) int {
+	if err := live.CancelAll(context.Background(), bot, drv, rt, e.saver(rt)); err != nil {
 		reason += "; cancelling also failed: " + err.Error()
 	}
 	rt.Status = "halted"
@@ -200,109 +234,111 @@ func halt(ctx context.Context, bot *store.Bot, drv exchangex.Exchange, rt *store
 		rt.Meta = map[string]string{}
 	}
 	rt.Meta["halt_reason"] = reason
-	_ = save()
-	_ = store.AppendAudit("run.halt", map[string]any{"bot": bot.Name, "reason": reason})
+	_ = e.saver(rt)()
+	_ = e.audit("run.halt", map[string]any{"bot": bot.Name, "reason": reason})
 	alert(bot.Name, "HALTED: "+reason+"; check open orders and positions on the venue")
 	return out.Fail("run.loop", fmt.Errorf("bot %s halted: %s", bot.Name, reason), 1)
 }
 
-// alert tells a person. Local notifications are planned (M6).
-func alert(bot, msg string) {
-	fmt.Fprintf(os.Stderr, "cuwan ALERT [%s]: %s\n", bot, msg)
-}
+func alert(bot, msg string) { fmt.Fprintf(os.Stderr, "cuwan ALERT [%s]: %s\n", bot, msg) }
 
 func runStatus(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("run.status", fmt.Errorf("usage: cuwan run status NAME"), 2)
+	f, err := parse(args, nil, nil)
+	if err == nil {
+		_, err = needOne(f, "cuwan run status NAME")
 	}
-	rt, err := store.GetRuntime(pos[0])
 	if err != nil {
-		return out.Fail("run.status", err, 1)
+		return out.Fail("run.status", err, 2)
 	}
-	out.Print(os.Stdout, "run.status", rt, fmt.Sprintf("%s mode=%s status=%s orders=%d", rt.BotName, rt.Mode, rt.Status, len(rt.Orders)))
-	return 0
+	return withEnv("run.status", func(e *env) int {
+		var rt store.Runtime
+		ok := false
+		_ = e.st.View(func(s *store.State) error { rt, ok = s.Runtimes[f.pos[0]]; return nil })
+		if !ok {
+			return out.Fail("run.status", fmt.Errorf("bot %s has not run", f.pos[0]), 1)
+		}
+		out.Print(os.Stdout, "run.status", rt, fmt.Sprintf("%s status=%s orders=%d net=%g", rt.Bot, rt.Status, len(rt.Orders), live.NetSize(&rt)))
+		return 0
+	})
 }
 
-// stopWait is how long `run stop` waits for a running loop to let go.
-var stopWait = 60 * time.Second
-
 func runStop(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("run.stop", fmt.Errorf("usage: cuwan run stop NAME [--yes] [--flatten]"), 2)
+	f, err := parse(args, nil, []string{"yes", "flatten"})
+	if err == nil {
+		_, err = needOne(f, "cuwan run stop NAME [--flatten] [--yes]")
 	}
-	if !flagBool(args, "--yes") {
-		if out.Agent() {
-			return out.Fail("run.stop", fmt.Errorf("destructive stop needs --yes from a person"), 1)
-		}
-		if !confirm("stop live bot " + pos[0] + "?") {
-			return out.Fail("run.stop", fmt.Errorf("aborted"), 1)
-		}
+	if err != nil {
+		return out.Fail("run.stop", err, 2)
 	}
-	bot, err := store.GetBot(pos[0])
+	if err := confirm(f, "cuwan run stop "+strings.Join(args, " "), "stop live bot "+f.pos[0]+"?"); err != nil {
+		return out.Fail("run.stop", err, 1)
+	}
+	return withEnv("run.stop", func(e *env) int { return stop(e, f.pos[0], f.set["flatten"]) })
+}
+
+func stop(e *env, name string, flatten bool) int {
+	ctx := context.Background()
+	bot, _, err := e.bot(name) // a stop always runs: the flag still follows the market
 	if err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
-	lock, err := takeOver(bot.Name)
+	lock, err := takeOver(e.dir, name)
 	if err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
 	defer lock.Unlock()
-	defer live.ClearStop(bot.Name)
-	// Read the runtime only now: the loop saved every order before it let go.
-	rt, err := store.GetRuntime(bot.Name)
+	defer live.ClearStop(e.dir, name)
+	var rt store.Runtime
+	ok := false
+	_ = e.st.View(func(s *store.State) error { rt, ok = s.Runtimes[name]; return nil })
+	if !ok || rt.Status == "stopped" {
+		out.Print(os.Stdout, "run.stop", map[string]string{"name": name}, name+" is not running")
+		return 0
+	}
+	_, drv, err := e.driver(bot.Exchange)
 	if err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
-	if rt.Mode == "live" && rt.Status != "stopped" {
-		_, drv, err := openExchange(bot.Exchange, false)
-		if err != nil {
+	save := e.saver(&rt)
+	if flatten {
+		if err := live.Flatten(ctx, &bot, drv, &rt, save); err != nil {
+			alert(name, "flatten failed: "+err.Error())
+			return out.Fail("run.stop", fmt.Errorf("flatten: %w (bot left as is; retry or close by hand)", err), 1)
+		}
+	} else {
+		if err := live.Reconcile(ctx, &bot, drv, &rt, save); err != nil {
 			return out.Fail("run.stop", err, 1)
 		}
-		ctx := context.Background()
-		save := func() error { return store.PutRuntime(rt) }
-		if flagBool(args, "--flatten") {
-			if err := live.Flatten(ctx, bot, drv, rt, save); err != nil {
-				alert(bot.Name, "flatten failed: "+err.Error())
-				return out.Fail("run.stop", fmt.Errorf("flatten: %w (bot left as is; retry or close by hand)", err), 1)
-			}
-			_ = store.AppendAudit("run.flatten", map[string]any{"bot": bot.Name})
-		} else {
-			if err := live.Reconcile(ctx, bot, drv, rt, save); err != nil {
-				return out.Fail("run.stop", err, 1)
-			}
-			if err := live.CancelAll(ctx, bot, drv, rt, save); err != nil {
-				return out.Fail("run.stop", fmt.Errorf("%w (bot left as is; retry)", err), 1)
-			}
+		if err := live.CancelAll(ctx, &bot, drv, &rt, save); err != nil {
+			return out.Fail("run.stop", fmt.Errorf("%w (bot left as is; retry)", err), 1)
 		}
 	}
 	rt.Status = "stopped"
-	if err := store.PutRuntime(rt); err != nil {
+	if err := save(); err != nil {
 		return out.Fail("run.stop", err, 1)
 	}
-	_ = store.AppendAudit("run.stop", map[string]any{"bot": bot.Name})
-	out.Print(os.Stdout, "run.stop", map[string]string{"name": bot.Name}, "stopped "+bot.Name)
+	if err := e.audit("run.stop", map[string]any{"bot": name, "flatten": flatten}); err != nil {
+		return out.Fail("run.stop", err, 1)
+	}
+	out.Print(os.Stdout, "run.stop", map[string]any{"name": name, "flatten": flatten, "net": live.NetSize(&rt)}, "stopped "+name)
 	return 0
 }
 
-// takeOver gets the bot's lock, asking a running loop to stop first.
-func takeOver(bot string) (*live.Lock, error) {
-	lock, err := live.TryLock(bot)
+// takeOver gets the bot's lock, asking a running loop to let go first.
+func takeOver(dir, bot string) (*live.Lock, error) {
+	lock, err := live.TryLock(dir, bot)
 	if !errors.Is(err, live.ErrLocked) {
 		return lock, err
 	}
-	if err := live.RequestStop(bot); err != nil {
+	if err := live.RequestStop(dir, bot); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(stopWait)
-	for time.Now().Before(deadline) {
+	for deadline := time.Now().Add(stopWait); time.Now().Before(deadline); {
 		time.Sleep(100 * time.Millisecond)
-		lock, err = live.TryLock(bot)
-		if !errors.Is(err, live.ErrLocked) {
+		if lock, err = live.TryLock(dir, bot); !errors.Is(err, live.ErrLocked) {
 			return lock, err
 		}
 	}
-	live.ClearStop(bot) // do not leave a request that would stop a later loop
+	live.ClearStop(dir, bot) // do not leave a request that would stop a later loop
 	return nil, fmt.Errorf("the running loop did not stop within %s; nothing was cancelled", stopWait)
 }

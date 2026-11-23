@@ -65,21 +65,26 @@ func pack(buf []byte, v any) ([]byte, error) {
 		n := len(x)
 		switch {
 		case n < 32:
-			buf = append(buf, 0xa0|byte(n))
+			buf = append(buf, 0xa0|byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 		case n < 1<<8:
-			buf = append(buf, 0xd9, byte(n))
+			buf = append(buf, 0xd9, byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 		case n < 1<<16:
-			buf = append(buf, 0xda, byte(n>>8), byte(n))
-		default:
+			buf = append(buf, 0xda, byte(n>>8), byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
+		case n <= math.MaxUint32:
 			buf = append(buf, 0xdb)
-			buf = binary.BigEndian.AppendUint32(buf, uint32(n))
+			buf = binary.BigEndian.AppendUint32(buf, uint32(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
+		default:
+			return nil, fmt.Errorf("hyperliquid: string of %d bytes is too long to sign", n)
 		}
 		return append(buf, x...), nil
 	case int:
-		return packInt(buf, int64(x)), nil
+		return packInt(buf, int64(x)), nil // an int always fits an int64
 	case int64:
 		return packInt(buf, x), nil
 	case []any:
+		if len(x) >= 1<<16 {
+			return nil, fmt.Errorf("hyperliquid: array of %d items is too long to sign", len(x))
+		}
 		buf = packLen(buf, len(x), 0x90, 0xdc)
 		for _, e := range x {
 			var err error
@@ -89,6 +94,9 @@ func pack(buf []byte, v any) ([]byte, error) {
 		}
 		return buf, nil
 	case omap:
+		if len(x) >= 1<<16 {
+			return nil, fmt.Errorf("hyperliquid: map of %d keys is too long to sign", len(x))
+		}
 		buf = packLen(buf, len(x), 0x80, 0xde)
 		for _, e := range x {
 			var err error
@@ -104,12 +112,12 @@ func pack(buf []byte, v any) ([]byte, error) {
 	return nil, fmt.Errorf("hyperliquid: cannot pack %T", v)
 }
 
-// packLen writes a fix or 16-bit array/map header (actions never need 32-bit).
+// packLen writes a fix or 16-bit array/map header; pack refuses n >= 65536.
 func packLen(buf []byte, n int, fix, b16 byte) []byte {
 	if n < 16 {
-		return append(buf, fix|byte(n))
+		return append(buf, fix|byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	}
-	return append(buf, b16, byte(n>>8), byte(n))
+	return append(buf, b16, byte(n>>8), byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 }
 
 // packInt uses the smallest encoding, as Python's msgpack does: positive
@@ -117,29 +125,29 @@ func packLen(buf []byte, n int, fix, b16 byte) []byte {
 func packInt(buf []byte, n int64) []byte {
 	switch {
 	case n >= 0 && n < 128:
-		return append(buf, byte(n))
+		return append(buf, byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= 0 && n < 1<<8:
-		return append(buf, 0xcc, byte(n))
+		return append(buf, 0xcc, byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= 0 && n < 1<<16:
-		return append(buf, 0xcd, byte(n>>8), byte(n))
+		return append(buf, 0xcd, byte(n>>8), byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= 0 && n < 1<<32:
 		buf = append(buf, 0xce)
-		return binary.BigEndian.AppendUint32(buf, uint32(n))
+		return binary.BigEndian.AppendUint32(buf, uint32(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= 0:
 		buf = append(buf, 0xcf)
-		return binary.BigEndian.AppendUint64(buf, uint64(n))
+		return binary.BigEndian.AppendUint64(buf, uint64(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= -32:
-		return append(buf, byte(n))
+		return append(buf, byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= math.MinInt8:
-		return append(buf, 0xd0, byte(n))
+		return append(buf, 0xd0, byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= math.MinInt16:
-		return append(buf, 0xd1, byte(n>>8), byte(n))
+		return append(buf, 0xd1, byte(n>>8), byte(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	case n >= math.MinInt32:
 		buf = append(buf, 0xd2)
-		return binary.BigEndian.AppendUint32(buf, uint32(n))
+		return binary.BigEndian.AppendUint32(buf, uint32(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 	}
 	buf = append(buf, 0xd3)
-	return binary.BigEndian.AppendUint64(buf, uint64(n))
+	return binary.BigEndian.AppendUint64(buf, uint64(n)) // #nosec G115 -- the case above bounds n to this width; msgpack keeps the low bytes on purpose
 }
 
 func keccak(parts ...[]byte) []byte {

@@ -23,11 +23,13 @@ type book struct {
 	closeFill float64 // fraction of each close that fills (default all)
 	posErr    error
 	rules     exchangex.SymbolRules
+	mark      float64 // 0: the mark is the last price
+	free      float64 // free base asset on spot
 	n         int
 }
 
 func newBook(p float64) *book {
-	return &book{price: p, orders: map[string]*exchangex.Order{}, rules: exchangex.SymbolRules{Tick: 0.01, Step: 0.001, MinQty: 0.001}}
+	return &book{price: p, orders: map[string]*exchangex.Order{}, rules: exchangex.SymbolRules{Tick: 0.01, Step: 0.001, MinQty: 0.001, Base: "B"}}
 }
 
 func (b *book) Name() string   { return "fake" }
@@ -35,7 +37,9 @@ func (b *book) Market() string { return "usdm" }
 func (b *book) Ticker(context.Context, string) (exchangex.Ticker, error) {
 	return exchangex.Ticker{Price: b.price}, nil
 }
-func (b *book) Balances(context.Context) ([]exchangex.Balance, error) { return nil, nil }
+func (b *book) Balances(context.Context) ([]exchangex.Balance, error) {
+	return []exchangex.Balance{{Asset: "B", Free: b.free}}, nil
+}
 func (b *book) Positions(context.Context) ([]exchangex.Position, error) {
 	return b.pos, b.posErr
 }
@@ -59,7 +63,7 @@ func (b *book) PlaceOrder(_ context.Context, r exchangex.PlaceReq) (exchangex.Or
 	}
 	b.n++
 	o := &exchangex.Order{ID: fmt.Sprint(b.n), ClientOID: r.ClientOID, Side: r.Side, Price: r.Price, Qty: r.Qty, Status: StatusOpen, ReduceOnly: r.ReduceOnly}
-	if r.ReduceOnly {
+	if r.ReduceOnly || r.IOC {
 		frac := 1.0
 		if b.noClose {
 			frac = 0
@@ -71,7 +75,11 @@ func (b *book) PlaceOrder(_ context.Context, r exchangex.PlaceReq) (exchangex.Or
 		if frac < 1 {
 			o.Status = StatusCanceled // IOC: the rest is cancelled
 		}
-		b.shrink(o.Filled)
+		if r.ReduceOnly {
+			b.shrink(o.Filled)
+		} else if r.Side == "sell" {
+			b.free -= o.Filled
+		}
 	}
 	b.orders[r.ClientOID] = o
 	return *o, err
@@ -120,15 +128,12 @@ func (b *book) fill(t *testing.T, side string, px float64) {
 	t.Fatalf("no open %s at %g", side, px)
 }
 
-// noStatus hides OrderStatus.
-type noStatus struct{ exchangex.Exchange }
-
 var gridBot = &store.Bot{Name: "g", Symbol: "S", Lower: 90, Upper: 110, Levels: 5, OrderSize: 1}
 
 // start places the grid (90 95 | 105 110 around 100; 100 is a sell).
-func start(t *testing.T, b *book, bot *store.Bot) (*store.RuntimeState, Saver, *[]string) {
+func start(t *testing.T, b *book, bot *store.Bot) (*store.Runtime, Saver, *[]string) {
 	t.Helper()
-	rt := &store.RuntimeState{BotName: bot.Name, Mode: "live", Status: "running"}
+	rt := &store.Runtime{Bot: bot.Name, Status: "running"}
 	var log []string
 	save := func() error {
 		last := rt.Orders[len(rt.Orders)-1]
@@ -142,7 +147,7 @@ func start(t *testing.T, b *book, bot *store.Bot) (*store.RuntimeState, Saver, *
 	return rt, save, &log
 }
 
-func countStatus(rt *store.RuntimeState, st string) int {
+func countStatus(rt *store.Runtime, st string) int {
 	n := 0
 	for _, o := range rt.Orders {
 		if o.Status == st {
@@ -263,19 +268,6 @@ func TestCanceledOutsideIsNotAFill(t *testing.T) {
 	}
 }
 
-// Finding 4: drivers without OrderStatus cannot run live.
-func TestNoOrderStatusRefused(t *testing.T) {
-	b := newBook(100)
-	ex := noStatus{b}
-	if !errors.Is(CanRun(ex), ErrNoOrderStatus) {
-		t.Fatal("CanRun accepted a driver without OrderStatus")
-	}
-	rt := &store.RuntimeState{}
-	if _, err := Step(context.Background(), gridBot, ex, rt, func() error { return nil }); !errors.Is(err, ErrNoOrderStatus) {
-		t.Fatalf("err %v", err)
-	}
-}
-
 // Finding 4: spot has its own loss guard.
 func TestSpotLossGuard(t *testing.T) {
 	b := newBook(100)
@@ -297,6 +289,7 @@ func TestSpotLossGuard(t *testing.T) {
 func futBot() *store.Bot {
 	bot := *gridBot
 	bot.Leverage = 20
+	bot.Futures = true
 	return &bot
 }
 
@@ -402,7 +395,7 @@ func TestEmptyIDsDoNotMatch(t *testing.T) {
 	b := newBook(100)
 	rt, save, _ := start(t, b, gridBot)
 	b.orders["ghost"] = &exchangex.Order{Status: StatusOpen} // no IDs
-	rt.Orders = append(rt.Orders, store.RuntimeOrder{Side: "buy", Price: 50, Qty: 1, Status: StatusOpen})
+	rt.Orders = append(rt.Orders, store.Order{Side: "buy", Price: 50, Qty: 1, Status: StatusOpen})
 	// It must be looked up (and not found), never matched to the ghost.
 	if _, err := Step(context.Background(), gridBot, b, rt, save); !errors.Is(err, exchangex.ErrOrderNotFound) {
 		t.Fatalf("err %v", err)
@@ -410,24 +403,24 @@ func TestEmptyIDsDoNotMatch(t *testing.T) {
 }
 
 func TestLock(t *testing.T) {
-	t.Setenv("CUWAN_HOME", t.TempDir())
-	l, err := TryLock("g")
+	dir := t.TempDir()
+	l, err := TryLock(dir, "g")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := TryLock("g"); !errors.Is(err, ErrLocked) {
+	if _, err := TryLock(dir, "g"); !errors.Is(err, ErrLocked) {
 		t.Fatalf("second lock: %v", err)
 	}
-	if StopRequested("g") {
+	if StopRequested(dir, "g") {
 		t.Fatal("stop before request")
 	}
-	_ = RequestStop("g")
-	if !StopRequested("g") {
+	_ = RequestStop(dir, "g")
+	if !StopRequested(dir, "g") {
 		t.Fatal("stop not seen")
 	}
-	ClearStop("g")
+	ClearStop(dir, "g")
 	l.Unlock()
-	l2, err := TryLock("g")
+	l2, err := TryLock(dir, "g")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,6 +429,13 @@ func TestLock(t *testing.T) {
 
 func (b *book) Rules(context.Context, string) (exchangex.SymbolRules, error) {
 	return b.rules, nil
+}
+
+func (b *book) MarkPrice(context.Context, string) (float64, error) {
+	if b.mark != 0 { // NaN included
+		return b.mark, nil
+	}
+	return b.price, nil
 }
 
 // Review N2: orders fit the tick and step; closes round toward a fill.
@@ -467,45 +467,6 @@ func TestRoundToVenueFilters(t *testing.T) {
 	if _, err := roundReq(exchangex.PlaceReq{Side: "buy", Price: 95, Qty: 1}, r, false); err == nil {
 		t.Error("order value below minimum accepted")
 	}
-}
-
-func TestNoRulesRefused(t *testing.T) {
-	if !errors.Is(CanRun(noRules{b: newBook(1)}), ErrNoRules) {
-		t.Fatal("driver without Rules accepted")
-	}
-}
-
-// noRules keeps OrderStatus but hides Rules.
-type noRules struct{ b *book }
-
-func (n noRules) Name() string   { return "x" }
-func (n noRules) Market() string { return "x" }
-func (n noRules) Ticker(ctx context.Context, s string) (exchangex.Ticker, error) {
-	return n.b.Ticker(ctx, s)
-}
-func (n noRules) Balances(ctx context.Context) ([]exchangex.Balance, error) {
-	return n.b.Balances(ctx)
-}
-func (n noRules) Positions(ctx context.Context) ([]exchangex.Position, error) {
-	return n.b.Positions(ctx)
-}
-func (n noRules) OpenOrders(ctx context.Context, s string) ([]exchangex.Order, error) {
-	return n.b.OpenOrders(ctx, s)
-}
-func (n noRules) PlaceOrder(ctx context.Context, r exchangex.PlaceReq) (exchangex.Order, error) {
-	return n.b.PlaceOrder(ctx, r)
-}
-func (n noRules) CancelOrder(ctx context.Context, s, id, cid string) error {
-	return n.b.CancelOrder(ctx, s, id, cid)
-}
-func (n noRules) SetLeverage(ctx context.Context, s string, l float64) error {
-	return n.b.SetLeverage(ctx, s, l)
-}
-func (n noRules) Permissions(ctx context.Context) (exchangex.Permissions, error) {
-	return n.b.Permissions(ctx)
-}
-func (n noRules) OrderStatus(ctx context.Context, s, id, cid string) (exchangex.Order, error) {
-	return n.b.OrderStatus(ctx, s, id, cid)
 }
 
 // Review N5: closes are IOC, retried with fresh prices until the bot is flat.

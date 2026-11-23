@@ -1,68 +1,63 @@
-// Package live runs a live grid bot against a venue driver.
+// Package live runs a grid bot against a venue driver.
 //
 // Rules the engine keeps:
 //   - Every order is saved as "pending" before it is sent, and saved again
-//     once the venue answers. A pending order is reconciled by its client
-//     order ID on the next step, so a timed-out send is never lost.
-//   - An order that left the book counts as filled only when the driver says
-//     so (OrderStatuser). Drivers without it cannot run live.
-//   - A failed preventive close or flatten is a CloseError: the caller must
-//     halt the bot and tell a person.
+//     once the venue answers. A pending order is found again by its client
+//     order ID, so a timed-out send is never lost.
+//   - An order that left the book counts as filled only when the venue says
+//     so (OrderStatus).
+//   - The guard runs first on every step, before any exit setting, and has
+//     no switch. A failed protective close is a CloseError: the caller halts
+//     the bot and tells a person.
 package live
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
-	"github.com/sgnd/cuwan/internal/grid"
-	"github.com/sgnd/cuwan/internal/risk"
 	"github.com/sgnd/cuwan/internal/store"
 )
 
-// OrderStatuser reports one order by exchange ID or client order ID. It
-// returns an error wrapping exchangex.ErrOrderNotFound when there is none.
-type OrderStatuser interface {
-	OrderStatus(ctx context.Context, symbol, orderID, clientOID string) (exchangex.Order, error)
-}
-
-// Order status values kept in the runtime.
+// Order states kept in the runtime, beside the venue's open, filled,
+// canceled and unknown.
 const (
-	StatusPending  = "pending"  // saved, send not confirmed
-	StatusOpen     = "open"     // on the book
-	StatusFilled   = "filled"   // fully filled
-	StatusCanceled = "canceled" // off the book, maybe partly filled
-	StatusFailed   = "failed"   // the venue never got it
-	StatusUnknown  = "unknown"  // the venue gave a state cuwan does not know; checked again
+	StatusPending  = "pending" // saved, send not confirmed
+	StatusOpen     = exchangex.StatusOpen
+	StatusFilled   = exchangex.StatusFilled
+	StatusCanceled = exchangex.StatusCanceled
+	StatusFailed   = "failed" // the venue never got it
+	StatusUnknown  = exchangex.StatusUnknown
 )
 
-// closeSlip makes the reduce-only close limit price cross the book.
-const closeSlip = 0.005
-
-// A pending order counts as never sent only after pendingMisses lookups
-// over at least pendingGrace.
 const (
+	// MaxLeverage is the futures leverage cap. It has no switch.
+	MaxLeverage = 20.0
+	// closeSlip makes a close's limit price cross the book.
+	closeSlip = 0.005
+	// closeAttempts is how many IOC closes are tried, each with a wider price.
+	closeAttempts = 3
+	// A pending order counts as never sent only after pendingMisses lookups
+	// over at least pendingGrace.
 	pendingMisses = 3
 	pendingGrace  = 2 * time.Minute
+	// eps is the size below which a position counts as flat.
+	eps = 1e-12
 )
 
 // now is the clock; tests replace it.
 var now = time.Now
 
-// eps is the size below which a net position counts as flat.
-const eps = 1e-12
-
 // Saver persists the runtime. The engine calls it before and after every
 // order it sends.
 type Saver func() error
-
-// ErrNoOrderStatus means the driver cannot confirm fills.
-var ErrNoOrderStatus = errors.New("live: this venue driver cannot confirm fills (no OrderStatus); live runs are refused")
 
 // CloseError means a protective close failed. Halt and alert.
 type CloseError struct{ Err error }
@@ -76,17 +71,33 @@ type Result struct {
 	Reason  string
 }
 
-// ErrNoRules means the driver cannot report price tick and size step.
-var ErrNoRules = errors.New("live: this venue driver cannot report tick and step sizes (no Rules); live runs are refused")
+// ErrNoSize means the bot has neither an order size nor a quote amount.
+var ErrNoSize = errors.New("live: the bot has no order size; set --order-size (base asset) or --quote-amount (quote asset)")
 
-// oid builds a client order ID that is unique to this run: a new run of the
-// same bot never reuses an old run's IDs.
-func oid(bot *store.Bot, rt *store.RuntimeState, px float64, side string, gen int) string {
-	return grid.ClientOID(bot.Name+"|"+RunID(rt), px, side, gen)
+// OrderQty is the size of one grid order at price px: the bot's order size,
+// or its quote amount divided by px. There is no default size.
+func OrderQty(bot *store.Bot, px float64) (float64, error) {
+	switch {
+	case bot.OrderSize > 0:
+		return bot.OrderSize, nil
+	case bot.QuoteAmount > 0 && px > 0:
+		return bot.QuoteAmount / px, nil
+	}
+	return 0, ErrNoSize
+}
+
+// CapLeverage clamps leverage to MaxLeverage.
+func CapLeverage(lev float64) float64 { return math.Min(lev, MaxLeverage) }
+
+// clientOID is a client order ID unique to this run, price, side and count.
+func clientOID(bot *store.Bot, rt *store.Runtime, px float64, side string) string {
+	raw := fmt.Sprintf("cuwan|%s|%s|%.8f|%s|%d", bot.Name, RunID(rt), px, side, len(rt.Orders)+1)
+	sum := sha256.Sum256([]byte(raw))
+	return "cw" + hex.EncodeToString(sum[:10])
 }
 
 // RunID returns the run's random ID, making one on first use.
-func RunID(rt *store.RuntimeState) string {
+func RunID(rt *store.Runtime) string {
 	if rt.Meta == nil {
 		rt.Meta = map[string]string{}
 	}
@@ -98,43 +109,36 @@ func RunID(rt *store.RuntimeState) string {
 	return rt.Meta["run_id"]
 }
 
-// statuser returns the driver's OrderStatuser or ErrNoOrderStatus.
-func statuser(ex exchangex.Exchange) (OrderStatuser, error) {
-	st, ok := ex.(OrderStatuser)
-	if !ok {
-		return nil, ErrNoOrderStatus
+// gridPrices are the bot's levels from lower to upper inclusive.
+func gridPrices(lo, hi float64, levels int) ([]float64, error) {
+	if lo <= 0 || hi <= lo {
+		return nil, fmt.Errorf("live: need 0 < lower < upper")
 	}
-	return st, nil
-}
-
-// CanRun reports whether the driver can run live.
-func CanRun(ex exchangex.Exchange) error {
-	if _, err := statuser(ex); err != nil {
-		return err
+	if levels < 2 {
+		return nil, fmt.Errorf("live: levels must be at least 2")
 	}
-	if _, ok := ex.(exchangex.RulesProvider); !ok {
-		return ErrNoRules
+	step := (hi - lo) / float64(levels-1)
+	out := make([]float64, levels)
+	for i := range out {
+		out[i] = lo + step*float64(i)
 	}
-	return nil
+	out[levels-1] = hi
+	return out, nil
 }
 
 // place fits the order to the venue filters, saves it as pending, sends it,
 // then saves the answer. crossing marks an order meant to fill at once.
-func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, save Saver, req exchangex.PlaceReq, crossing bool, parent string) (int, error) {
-	rp, ok := ex.(exchangex.RulesProvider)
-	if !ok {
-		return -1, ErrNoRules
-	}
-	rules, err := rp.Rules(ctx, req.Symbol)
+func place(ctx context.Context, ex exchangex.Exchange, rt *store.Runtime, save Saver, req exchangex.PlaceReq, crossing, isClose bool, parent string) (int, error) {
+	rules, err := ex.Rules(ctx, req.Symbol)
 	if err != nil {
 		return -1, err
 	}
 	if req, err = roundReq(req, rules, crossing); err != nil {
 		return -1, err
 	}
-	rt.Orders = append(rt.Orders, store.RuntimeOrder{
+	rt.Orders = append(rt.Orders, store.Order{
 		ClientOID: req.ClientOID, Side: req.Side, Price: req.Price, Qty: req.Qty,
-		ReduceOnly: req.ReduceOnly, Status: StatusPending, SentAt: now(), Parent: parent,
+		ReduceOnly: req.ReduceOnly, Close: isClose, Status: StatusPending, SentAt: now(), Parent: parent,
 	})
 	i := len(rt.Orders) - 1
 	if err := save(); err != nil {
@@ -142,7 +146,7 @@ func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, s
 	}
 	o, err := ex.PlaceOrder(ctx, req)
 	if err != nil {
-		return i, fmt.Errorf("place %s: %w (kept as pending; reconciled by client order ID)", req.ClientOID, err)
+		return i, fmt.Errorf("place %s: %w (kept as pending; found again by client order ID)", req.ClientOID, err)
 	}
 	rt.Orders[i].ExchangeID = o.ID
 	rt.Orders[i].Status = StatusOpen
@@ -153,20 +157,24 @@ func place(ctx context.Context, ex exchangex.Exchange, rt *store.RuntimeState, s
 	return i, save()
 }
 
-// PlaceGrid places the initial grid around mid, one order at a time.
-func PlaceGrid(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, save Saver, mid float64) error {
-	plan, err := grid.Build(bot.Lower, bot.Upper, bot.Levels)
+// PlaceGrid places the grid around mid, one order at a time.
+func PlaceGrid(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver, mid float64) error {
+	lo, hi := Bounds(bot, rt)
+	prices, err := gridPrices(lo, hi, bot.Levels)
 	if err != nil {
 		return err
 	}
-	for _, px := range plan.Prices {
-		side := grid.LevelSide(px, mid)
-		qty := bot.OrderSize
-		if qty <= 0 {
-			qty = 0.001
+	for _, px := range prices {
+		side := exchangex.SideSell
+		if px < mid {
+			side = exchangex.SideBuy
 		}
-		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: side, Price: px, Qty: qty, ClientOID: oid(bot, rt, px, side, len(rt.Orders)+1)}
-		if _, err := place(ctx, ex, rt, save, req, false, ""); err != nil {
+		qty, err := OrderQty(bot, px)
+		if err != nil {
+			return err
+		}
+		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: side, Price: px, Qty: qty, ClientOID: clientOID(bot, rt, px, side)}
+		if _, err := place(ctx, ex, rt, save, req, false, false, ""); err != nil {
 			return err
 		}
 	}
@@ -174,18 +182,14 @@ func PlaceGrid(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 }
 
 // Reconcile resolves pending orders by client order ID.
-func Reconcile(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, save Saver) error {
-	st, err := statuser(ex)
-	if err != nil {
-		return err
-	}
+func Reconcile(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) error {
 	changed := false
 	for i := range rt.Orders {
 		o := &rt.Orders[i]
 		if o.Status != StatusPending {
 			continue
 		}
-		got, err := st.OrderStatus(ctx, bot.Symbol, "", o.ClientOID)
+		got, err := ex.OrderStatus(ctx, bot.Symbol, "", o.ClientOID)
 		if errors.Is(err, exchangex.ErrOrderNotFound) {
 			// Right after a timeout the venue may not know the order yet.
 			o.Misses++
@@ -209,7 +213,7 @@ func Reconcile(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 }
 
 // apply copies a venue answer onto a runtime order.
-func apply(o *store.RuntimeOrder, got exchangex.Order) {
+func apply(o *store.Order, got exchangex.Order) {
 	if got.ID != "" {
 		o.ExchangeID = got.ID
 	}
@@ -220,12 +224,9 @@ func apply(o *store.RuntimeOrder, got exchangex.Order) {
 	}
 }
 
-// Step reconciles, runs the loss guard, and refills filled grid orders.
-func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, save Saver) (Result, error) {
-	st, err := statuser(ex)
-	if err != nil {
-		return Result{}, err
-	}
+// Step reconciles, runs the guard, applies the exits, and refills filled
+// grid orders.
+func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) (Result, error) {
 	if rt.Meta == nil {
 		rt.Meta = map[string]string{}
 	}
@@ -249,10 +250,22 @@ func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.
 		}
 		return Result{Stopped: true, Reason: reason}, nil
 	}
+	// Range exits run only after the guard, so no exit setting can skip it.
+	if res, done, err := exits(ctx, bot, ex, rt, save, t.Price); done || err != nil {
+		return res, err
+	}
+	if err := syncBook(ctx, bot, ex, rt, save); err != nil {
+		return Result{}, err
+	}
+	return Result{}, refill(ctx, bot, ex, rt, save)
+}
 
+// syncBook updates open grid orders from the book, asking the venue about each
+// order that left it.
+func syncBook(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) error {
 	open, err := ex.OpenOrders(ctx, bot.Symbol)
 	if err != nil {
-		return Result{}, err
+		return err
 	}
 	onBook := map[string]exchangex.Order{}
 	for _, o := range open {
@@ -263,67 +276,60 @@ func Step(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.
 			onBook["cid:"+o.ClientOID] = o
 		}
 	}
-	find := func(o store.RuntimeOrder) (exchangex.Order, bool) {
-		if o.ExchangeID != "" {
-			if b, ok := onBook["id:"+o.ExchangeID]; ok {
-				return b, true
-			}
-		}
-		if o.ClientOID != "" {
-			if b, ok := onBook["cid:"+o.ClientOID]; ok {
-				return b, true
-			}
-		}
-		return exchangex.Order{}, false
-	}
-	step := 0.0
-	if bot.Levels > 1 {
-		step = (bot.Upper - bot.Lower) / float64(bot.Levels-1)
-	}
 	for i := range rt.Orders {
 		o := rt.Orders[i]
-		if (o.Status != StatusOpen && o.Status != StatusUnknown) || o.ReduceOnly {
+		if (o.Status != StatusOpen && o.Status != StatusUnknown) || o.Close {
 			continue
 		}
-		if b, ok := find(o); ok {
+		b, ok := onBook["id:"+o.ExchangeID]
+		if !ok || o.ExchangeID == "" {
+			b, ok = onBook["cid:"+o.ClientOID]
+			ok = ok && o.ClientOID != ""
+		}
+		if ok {
 			rt.Orders[i].Filled = b.Filled // partial fills count toward the net size
 			continue
 		}
-		got, err := st.OrderStatus(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
+		got, err := ex.OrderStatus(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
 		if err != nil {
-			return Result{}, err
+			return err
 		}
 		apply(&rt.Orders[i], got)
 		if err := save(); err != nil {
-			return Result{}, err
+			return err
 		}
 	}
-	// Every filled grid order gets one counter order, however it got filled
-	// (seen leaving the book, or a pending order later found filled).
+	return nil
+}
+
+// refill gives every filled grid order one counter order one level away,
+// however it got filled.
+func refill(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) error {
+	step := gridStep(bot)
 	for i, n := 0, len(rt.Orders); i < n; i++ {
 		o := rt.Orders[i]
-		if o.Status != StatusFilled || o.ReduceOnly || o.Countered {
+		if o.Status != StatusFilled || o.Close || o.Countered {
 			continue
 		}
-		opp, px := "sell", o.Price+step
-		if o.Side == "sell" {
-			opp, px = "buy", o.Price-step
+		opp, px := exchangex.SideSell, o.Price+step
+		if o.Side == exchangex.SideSell {
+			opp, px = exchangex.SideBuy, o.Price-step
 		}
 		rt.Orders[i].Countered = true
 		if px <= 0 {
 			continue
 		}
-		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: opp, Price: px, Qty: o.Qty, ClientOID: oid(bot, rt, px, opp, len(rt.Orders)+1)}
-		if _, err := place(ctx, ex, rt, save, req, false, o.ClientOID); err != nil {
-			return Result{}, err
+		req := exchangex.PlaceReq{Symbol: bot.Symbol, Side: opp, Price: px, Qty: o.Qty, ClientOID: clientOID(bot, rt, px, opp)}
+		if _, err := place(ctx, ex, rt, save, req, false, false, o.ClientOID); err != nil {
+			return err
 		}
 	}
-	return Result{}, save()
+	return save()
 }
 
 // reopenParent lets a grid order be countered again after its counter
 // order failed.
-func reopenParent(rt *store.RuntimeState, parent string) {
+func reopenParent(rt *store.Runtime, parent string) {
 	if parent == "" {
 		return
 	}
@@ -334,43 +340,11 @@ func reopenParent(rt *store.RuntimeState, parent string) {
 	}
 }
 
-// guard returns a reason to stop, or "".
-//   - futures: the ~5% preventive close from the bot's own position
-//   - spot: price more than 5% below the grid's lower bound
-func guard(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, mark float64) (string, error) {
-	if bot.Leverage <= 0 {
-		if mark < bot.Lower*(1-risk.PreventiveClosePct) {
-			return fmt.Sprintf("spot loss guard: price %g is more than %g%% below the grid", mark, risk.PreventiveClosePct*100), nil
-		}
-		return "", nil
-	}
-	net := NetSize(rt)
-	if math.Abs(net) < eps {
-		return "", nil
-	}
-	p, err := position(ctx, bot, ex)
-	if err != nil {
-		return "", err
-	}
-	entry := p.EntryPrice
-	if entry <= 0 {
-		entry = (bot.Lower + bot.Upper) / 2
-	}
-	side := "buy"
-	if net < 0 {
-		side = "sell"
-	}
-	if risk.CheckFutures(entry, mark, bot.Leverage, side).Preventive {
-		return "preventive close: mark within 5% of the path to liquidation", nil
-	}
-	return "", nil
-}
-
 // NetSize is the bot's own position from its fills: buys minus sells.
-func NetSize(rt *store.RuntimeState) float64 {
+func NetSize(rt *store.Runtime) float64 {
 	n := 0.0
 	for _, o := range rt.Orders {
-		if o.Side == "buy" {
+		if o.Side == exchangex.SideBuy {
 			n += o.Filled
 		} else {
 			n -= o.Filled
@@ -389,7 +363,7 @@ func position(ctx context.Context, bot *store.Bot, ex exchangex.Exchange) (excha
 		if p.Symbol != bot.Symbol || p.Size == 0 {
 			continue
 		}
-		if (p.Side == "short" || p.Side == "sell") && p.Size > 0 {
+		if (p.Side == "short" || p.Side == exchangex.SideSell) && p.Size > 0 {
 			p.Size = -p.Size
 		}
 		return p, nil
@@ -397,25 +371,19 @@ func position(ctx context.Context, bot *store.Bot, ex exchangex.Exchange) (excha
 	return exchangex.Position{}, nil
 }
 
-// Flatten cancels the bot's open orders and, on futures, closes the bot's
-// own net size with a reduce-only order. It refuses when the venue position
-// is smaller than or opposite to the bot's net size (other bots or manual
-// trades share the symbol), and checks that the close filled.
-func Flatten(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, save Saver) error {
-	st, err := statuser(ex)
-	if err != nil {
-		return err
-	}
+// Flatten cancels the bot's open orders and closes the bot's own net size:
+// reduce-only on futures, a sell of the bought base asset on spot. It
+// refuses when the venue position or balance does not cover the bot's own
+// size, and checks that the close filled.
+func Flatten(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) error {
 	if err := Reconcile(ctx, bot, ex, rt, save); err != nil {
 		return err
 	}
 	if err := CancelAll(ctx, bot, ex, rt, save); err != nil {
 		return err
 	}
-	if bot.Leverage > 0 {
-		if err := closeNet(ctx, bot, ex, st, rt, save); err != nil {
-			return err
-		}
+	if err := closeNet(ctx, bot, ex, rt, save); err != nil {
+		return err
 	}
 	rt.Status = "stopped"
 	return save()
@@ -423,11 +391,7 @@ func Flatten(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *sto
 
 // CancelAll cancels the bot's open and pending orders (pending ones by
 // client order ID) and records any fill that landed before the cancel.
-func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.RuntimeState, save Saver) error {
-	st, err := statuser(ex)
-	if err != nil {
-		return err
-	}
+func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) error {
 	for i := range rt.Orders {
 		o := &rt.Orders[i]
 		if o.Status != StatusOpen && o.Status != StatusPending && o.Status != StatusUnknown {
@@ -437,7 +401,7 @@ func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 		if err != nil && !errors.Is(err, exchangex.ErrOrderNotFound) {
 			return fmt.Errorf("cancel %s: %w", o.ClientOID, err)
 		}
-		got, err := st.OrderStatus(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
+		got, err := ex.OrderStatus(ctx, bot.Symbol, o.ExchangeID, o.ClientOID)
 		switch {
 		case errors.Is(err, exchangex.ErrOrderNotFound):
 			o.Status = StatusFailed // cancelled by client ID before it ever existed
@@ -456,20 +420,48 @@ func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 	return nil
 }
 
-// closeAttempts is how many IOC closes are tried, each with a wider price.
-const closeAttempts = 3
+// covered returns the venue's own measure of the bot's size: the signed
+// futures position, or the free base asset on spot (only a long can be
+// closed there).
+func covered(ctx context.Context, bot *store.Bot, ex exchangex.Exchange) (float64, error) {
+	if bot.Futures {
+		p, err := position(ctx, bot, ex)
+		return p.Size, err
+	}
+	rules, err := ex.Rules(ctx, bot.Symbol)
+	if err != nil {
+		return 0, err
+	}
+	if rules.Base == "" {
+		return 0, fmt.Errorf("live: the venue did not name the base asset of %s", bot.Symbol)
+	}
+	bals, err := ex.Balances(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, b := range bals {
+		if strings.EqualFold(b.Asset, rules.Base) {
+			return b.Free, nil
+		}
+	}
+	return 0, nil
+}
 
-func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st OrderStatuser, rt *store.RuntimeState, save Saver) error {
+func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, save Saver) error {
 	start := NetSize(rt)
 	if math.Abs(start) < eps {
 		return nil
 	}
-	before, err := position(ctx, bot, ex)
+	futures := bot.Futures
+	if !futures && start < 0 {
+		return fmt.Errorf("the bot sold %g more than it bought on spot; nothing to sell back, check the venue", -start)
+	}
+	before, err := covered(ctx, bot, ex)
 	if err != nil {
 		return err
 	}
-	if before.Size*start <= 0 || math.Abs(before.Size)+eps < math.Abs(start) {
-		return fmt.Errorf("venue position %g on %s does not cover the bot's own size %g; close it by hand", before.Size, bot.Symbol, start)
+	if before*start <= 0 || math.Abs(before)+eps < math.Abs(start) {
+		return fmt.Errorf("venue holds %g on %s, which does not cover the bot's own size %g; close it by hand", before, bot.Symbol, start)
 	}
 	for attempt := 1; attempt <= closeAttempts; attempt++ {
 		net := NetSize(rt)
@@ -481,19 +473,19 @@ func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st Ord
 			return err
 		}
 		slip := closeSlip * float64(attempt)
-		side, px := "sell", t.Price*(1-slip)
+		side, px := exchangex.SideSell, t.Price*(1-slip)
 		if net < 0 {
-			side, px = "buy", t.Price*(1+slip)
+			side, px = exchangex.SideBuy, t.Price*(1+slip)
 		}
 		req := exchangex.PlaceReq{
-			Symbol: bot.Symbol, Side: side, Price: px, Qty: math.Abs(net), ReduceOnly: true, IOC: true,
-			ClientOID: oid(bot, rt, px, side, len(rt.Orders)+1),
+			Symbol: bot.Symbol, Side: side, Price: px, Qty: math.Abs(net), ReduceOnly: futures, IOC: true,
+			ClientOID: clientOID(bot, rt, px, side),
 		}
-		i, err := place(ctx, ex, rt, save, req, true, "")
+		i, err := place(ctx, ex, rt, save, req, true, true, "")
 		if err != nil {
 			return err
 		}
-		got, err := st.OrderStatus(ctx, bot.Symbol, rt.Orders[i].ExchangeID, req.ClientOID)
+		got, err := ex.OrderStatus(ctx, bot.Symbol, rt.Orders[i].ExchangeID, req.ClientOID)
 		if err != nil {
 			return err
 		}
@@ -505,12 +497,12 @@ func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, st Ord
 	if left := NetSize(rt); math.Abs(left) >= eps {
 		return fmt.Errorf("%g of %g still open after %d close tries; close it by hand", left, start, closeAttempts)
 	}
-	after, err := position(ctx, bot, ex)
+	after, err := covered(ctx, bot, ex)
 	if err != nil {
 		return err
 	}
-	if math.Abs(before.Size)-math.Abs(after.Size)+eps < math.Abs(start) {
-		return fmt.Errorf("venue position went from %g to %g, not down by the bot's %g; check the venue", before.Size, after.Size, start)
+	if math.Abs(before)-math.Abs(after)+eps < math.Abs(start) {
+		return fmt.Errorf("venue went from %g to %g, not down by the bot's %g; check the venue", before, after, start)
 	}
 	return nil
 }

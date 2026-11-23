@@ -1,221 +1,222 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/sgnd/cuwan/internal/grid"
+	"github.com/sgnd/cuwan/internal/live"
 	"github.com/sgnd/cuwan/internal/out"
-	"github.com/sgnd/cuwan/internal/risk"
 	"github.com/sgnd/cuwan/internal/store"
 )
 
-func cmdBot(args []string) int {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stdout, "usage: cuwan bot add|list|show|edit|rm …")
-		return 0
-	}
-	switch args[0] {
-	case "add":
-		return botAdd(args[1:])
-	case "list":
-		return botList(args[1:])
-	case "show":
-		return botShow(args[1:])
-	case "edit":
-		return botEdit(args[1:])
-	case "rm", "delete":
-		return botRm(args[1:])
-	case "draft-range":
-		return botDraftRange(args[1:])
-	default:
-		return out.Fail("bot", fmt.Errorf("unknown verb %q", args[0]), 2)
-	}
-}
+var botFlags = []string{"exchange", "symbol", "lower", "upper", "levels", "order-size", "quote-amount", "leverage", "on-exit", "take-profit", "stop-loss"}
 
-// botDraftRange is a stub for a later AI range-draft command (15% buffer).
-func botDraftRange(args []string) int {
-	return out.Fail("bot.draft-range", fmt.Errorf("not implemented yet (planned: AI range draft with 15%% buffer); set --lower/--upper on bot add for now"), 1)
-}
+const botUsage = "cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N (--order-size N | --quote-amount N) [--leverage N] [--on-exit stop|pause|trail] [--take-profit PRICE] [--stop-loss PRICE]"
 
-func botAdd(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("bot.add", fmt.Errorf("usage: cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N [--order-size|--size N] [--quote-amount N] [--leverage N]"), 2)
+// apply copies the given flags onto b.
+func applyBot(b *store.Bot, f *flags) error {
+	if f.set["exchange"] {
+		b.Exchange = f.vals["exchange"]
 	}
-	b := &store.Bot{Name: pos[0]}
-	if err := applyBotFlags(b, args); err != nil {
-		return out.Fail("bot.add", err, 2)
+	if f.set["symbol"] {
+		b.Symbol = f.vals["symbol"]
 	}
-	if b.Exchange == "" || b.Symbol == "" || b.Lower == 0 || b.Upper == 0 || b.Levels == 0 {
-		return out.Fail("bot.add", fmt.Errorf("need --exchange --symbol --lower --upper --levels"), 2)
+	if f.set["on-exit"] {
+		b.OnExit = f.vals["on-exit"]
 	}
-	if err := validateBot(b); err != nil {
-		return out.Fail("bot.add", err, 2)
-	}
-	if b.Leverage > 0 {
-		lev, warn := risk.CapLeverage(b.Leverage)
-		b.Leverage = lev
-		if warn != nil && !out.Agent() {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", warn)
-		}
-	}
-	if err := store.PutBot(b); err != nil {
-		return out.Fail("bot.add", err, 1)
-	}
-	_ = store.AppendAudit("bot.add", map[string]any{"name": b.Name})
-	out.Print(os.Stdout, "bot.add", b, fmt.Sprintf("added bot %s (%s %s %.0f–%.0f x%d)", b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels))
-	return 0
-}
-
-// validateBot rejects a range the grid cannot build and negative sizes.
-func validateBot(b *store.Bot) error {
-	if _, err := grid.Build(b.Lower, b.Upper, b.Levels); err != nil {
-		return err
-	}
-	if b.OrderSize < 0 || b.QuoteAmount < 0 || b.Leverage < 0 {
-		return fmt.Errorf("--order-size, --quote-amount and --leverage must not be negative")
-	}
-	return nil
-}
-
-func applyBotFlags(b *store.Bot, args []string) error {
-	if v, ok := flagValue(args, "--exchange"); ok {
-		b.Exchange = v
-	}
-	if v, ok := flagValue(args, "--symbol"); ok {
-		b.Symbol = v
-	}
-	if v, ok := flagValue(args, "--lower"); ok {
-		f, err := strconv.ParseFloat(v, 64)
+	if f.set["levels"] {
+		n, err := strconv.Atoi(f.vals["levels"])
 		if err != nil {
-			return err
-		}
-		b.Lower = f
-	}
-	if v, ok := flagValue(args, "--upper"); ok {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return err
-		}
-		b.Upper = f
-	}
-	if v, ok := flagValue(args, "--levels"); ok {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return err
+			return errors.New("--levels must be a whole number")
 		}
 		b.Levels = n
 	}
-	if v, ok := flagValue(args, "--order-size"); ok {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return err
+	for name, dst := range map[string]*float64{
+		"lower": &b.Lower, "upper": &b.Upper, "order-size": &b.OrderSize, "quote-amount": &b.QuoteAmount,
+		"leverage": &b.Leverage, "take-profit": &b.TakeProfit, "stop-loss": &b.StopLoss,
+	} {
+		if f.set[name] {
+			v, err := f.num(name)
+			if err != nil {
+				return err
+			}
+			*dst = v
 		}
-		b.OrderSize = f
-	}
-	if v, ok := flagValue(args, "--size"); ok {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return err
-		}
-		b.OrderSize = f
-	}
-	if v, ok := flagValue(args, "--quote-amount"); ok {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return err
-		}
-		b.QuoteAmount = f
-	}
-	if v, ok := flagValue(args, "--leverage"); ok {
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return err
-		}
-		b.Leverage = f
 	}
 	return nil
 }
 
-func botList(args []string) int {
-	list, err := store.ListBots()
-	if err != nil {
-		if err == store.ErrNoStore {
-			out.Print(os.Stdout, "bot.list", []any{}, "(none)")
-			return 0
+// validBot checks a bot against the store it will live in.
+func validBot(b *store.Bot, s *store.State) error {
+	x, ok := s.Exchanges[b.Exchange]
+	switch {
+	case !ok:
+		return fmt.Errorf("no exchange %q", b.Exchange)
+	case b.Symbol == "":
+		return errors.New("--symbol is needed")
+	case b.Lower <= 0 || b.Upper <= b.Lower:
+		return errors.New("need 0 < --lower < --upper")
+	case b.Levels < 2:
+		return errors.New("--levels must be at least 2")
+	case b.OrderSize < 0 || b.QuoteAmount < 0 || b.Leverage < 0 || b.TakeProfit < 0 || b.StopLoss < 0:
+		return errors.New("sizes, leverage and prices must not be negative")
+	case b.OrderSize > 0 && b.QuoteAmount > 0:
+		return errors.New("set --order-size or --quote-amount, not both")
+	case b.OrderSize == 0 && b.QuoteAmount == 0:
+		return live.ErrNoSize
+	case !live.ValidOnExit(b.OnExit):
+		return errors.New("--on-exit must be stop, pause or trail")
+	case b.TakeProfit > 0 && b.StopLoss > 0 && b.StopLoss >= b.TakeProfit:
+		return errors.New("--stop-loss must be below --take-profit")
+	}
+	for _, v := range []float64{b.Lower, b.Upper, b.OrderSize, b.QuoteAmount, b.Leverage, b.TakeProfit, b.StopLoss} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return errors.New("every number must be finite")
 		}
-		return out.Fail("bot.list", err, 1)
 	}
-	var lines []string
-	for _, b := range list {
-		lines = append(lines, fmt.Sprintf("%s  %s %s  %.4g–%.4g x%d", b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels))
+	return fitMarket(b, x)
+}
+
+func botAdd(args []string) int { return botSave("bot.add", args, true) }
+
+func botEdit(args []string) int { return botSave("bot.edit", args, false) }
+
+func botSave(cmd string, args []string, create bool) int {
+	f, err := parse(args, botFlags, nil)
+	if err == nil {
+		_, err = needOne(f, botUsage)
 	}
-	text := "(none)"
-	if len(lines) > 0 {
-		text = strings.Join(lines, "\n")
+	if err != nil {
+		return out.Fail(cmd, err, 2)
 	}
-	out.Print(os.Stdout, "bot.list", list, text)
-	return 0
+	return withEnv(cmd, func(e *env) int {
+		var b store.Bot
+		usage := false
+		err := e.st.Update(func(s *store.State) error {
+			old, exists := s.Bots[f.pos[0]]
+			if create && exists {
+				return fmt.Errorf("bot %s exists; use `cuwan bot edit`", f.pos[0])
+			}
+			if !create && !exists {
+				return fmt.Errorf("no bot %q", f.pos[0])
+			}
+			if rt, ok := s.Runtimes[f.pos[0]]; ok && rt.Status != "stopped" {
+				return fmt.Errorf("bot %s is %s; stop it before changing it", f.pos[0], rt.Status)
+			}
+			b = old
+			b.Name = f.pos[0]
+			if err := applyBot(&b, f); err != nil {
+				usage = true
+				return err
+			}
+			if err := validBot(&b, s); err != nil {
+				usage = true
+				return err
+			}
+			s.Bots[b.Name] = b
+			return s.Append(map[string]any{"command": cmd, "name": b.Name, "agent": out.Agent()})
+		})
+		if err != nil {
+			code := 1
+			if usage {
+				code = 2
+			}
+			return out.Fail(cmd, err, code)
+		}
+		out.Print(os.Stdout, cmd, b, fmt.Sprintf("%s %s %s %g-%g x%d", b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels))
+		return 0
+	})
+}
+
+func botList(args []string) int {
+	return withEnv("bot.list", func(e *env) int {
+		list := []store.Bot{}
+		_ = e.st.View(func(s *store.State) error {
+			for _, b := range s.Bots {
+				list = append(list, b)
+			}
+			return nil
+		})
+		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+		var lines []string
+		for _, b := range list {
+			lines = append(lines, fmt.Sprintf("%s  %s %s %g-%g x%d", b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels))
+		}
+		out.Print(os.Stdout, "bot.list", list, strings.Join(lines, "\n"))
+		return 0
+	})
 }
 
 func botShow(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("bot.show", fmt.Errorf("usage: cuwan bot show NAME"), 2)
+	f, err := parse(args, nil, nil)
+	if err == nil {
+		_, err = needOne(f, "cuwan bot show NAME")
 	}
-	b, err := store.GetBot(pos[0])
 	if err != nil {
-		return out.Fail("bot.show", err, 1)
+		return out.Fail("bot.show", err, 2)
 	}
-	out.Print(os.Stdout, "bot.show", b, fmt.Sprintf("%s\n  exchange: %s\n  symbol: %s\n  range: %.8g – %.8g\n  levels: %d\n  order_size: %g\n  leverage: %g (cap %g)",
-		b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels, b.OrderSize, b.Leverage, risk.MaxLeverage))
-	return 0
-}
-
-func botEdit(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("bot.edit", fmt.Errorf("usage: cuwan bot edit NAME [flags]"), 2)
-	}
-	b, err := store.GetBot(pos[0])
-	if err != nil {
-		return out.Fail("bot.edit", err, 1)
-	}
-	if err := applyBotFlags(b, args); err != nil {
-		return out.Fail("bot.edit", err, 2)
-	}
-	if err := validateBot(b); err != nil {
-		return out.Fail("bot.edit", err, 2)
-	}
-	if b.Leverage > 0 {
-		b.Leverage, _ = risk.CapLeverage(b.Leverage)
-	}
-	if err := store.PutBot(b); err != nil {
-		return out.Fail("bot.edit", err, 1)
-	}
-	out.Print(os.Stdout, "bot.edit", b, "updated "+b.Name)
-	return 0
+	return withEnv("bot.show", func(e *env) int {
+		var b store.Bot
+		ok := false
+		_ = e.st.View(func(s *store.State) error { b, ok = s.Bots[f.pos[0]]; return nil })
+		if !ok {
+			return out.Fail("bot.show", fmt.Errorf("no bot %q", f.pos[0]), 1)
+		}
+		onExit := b.OnExit
+		if onExit == "" {
+			onExit = live.OnExitPause
+		}
+		out.Print(os.Stdout, "bot.show", b, fmt.Sprintf("%s\n  exchange: %s\n  symbol: %s\n  range: %g - %g\n  levels: %d\n  order size: %g\n  quote amount: %g\n  leverage: %g (cap %g)\n  on exit: %s\n  take profit: %g\n  stop loss: %g",
+			b.Name, b.Exchange, b.Symbol, b.Lower, b.Upper, b.Levels, b.OrderSize, b.QuoteAmount, b.Leverage, live.MaxLeverage, onExit, b.TakeProfit, b.StopLoss))
+		return 0
+	})
 }
 
 func botRm(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("bot.rm", fmt.Errorf("usage: cuwan bot rm NAME [--yes]"), 2)
+	f, err := parse(args, nil, []string{"yes"})
+	if err == nil {
+		_, err = needOne(f, "cuwan bot rm NAME [--yes]")
 	}
-	if !flagBool(args, "--yes") {
-		if out.Agent() {
-			return out.Fail("bot.rm", fmt.Errorf("refusing without --yes"), 1)
-		}
-		if !confirm("delete bot " + pos[0] + "?") {
-			return out.Fail("bot.rm", fmt.Errorf("aborted"), 1)
-		}
+	if err != nil {
+		return out.Fail("bot.rm", err, 2)
 	}
-	if err := store.DeleteBot(pos[0]); err != nil {
+	if err := confirm(f, "cuwan bot rm "+f.pos[0], "remove bot "+f.pos[0]+"?"); err != nil {
 		return out.Fail("bot.rm", err, 1)
 	}
-	out.Print(os.Stdout, "bot.rm", map[string]string{"name": pos[0]}, "removed "+pos[0])
-	return 0
+	return withEnv("bot.rm", func(e *env) int {
+		err := e.st.Update(func(s *store.State) error {
+			if _, ok := s.Bots[f.pos[0]]; !ok {
+				return fmt.Errorf("no bot %q", f.pos[0])
+			}
+			if rt, ok := s.Runtimes[f.pos[0]]; ok && rt.Status != "stopped" {
+				return fmt.Errorf("bot %s is %s; stop it first", f.pos[0], rt.Status)
+			}
+			delete(s.Bots, f.pos[0])
+			delete(s.Runtimes, f.pos[0])
+			return s.Append(map[string]any{"command": "bot.rm", "name": f.pos[0], "agent": out.Agent()})
+		})
+		if err != nil {
+			return out.Fail("bot.rm", err, 1)
+		}
+		out.Print(os.Stdout, "bot.rm", map[string]string{"name": f.pos[0]}, "removed "+f.pos[0])
+		return 0
+	})
+}
+
+// fitMarket sets the bot's futures flag from its exchange's market (it is
+// never stored) and checks that the bot's leverage fits that market.
+func fitMarket(b *store.Bot, x store.Exchange) error {
+	b.Futures = x.Market != "spot"
+	switch {
+	case b.Futures && (b.Leverage < 1 || b.Leverage > live.MaxLeverage || b.Leverage != math.Trunc(b.Leverage)):
+		return fmt.Errorf("a futures exchange needs --leverage, a whole number from 1 to %g", live.MaxLeverage)
+	case !b.Futures && b.Leverage != 0:
+		return errors.New("--leverage is for futures; this exchange is spot")
+	}
+	return nil
 }

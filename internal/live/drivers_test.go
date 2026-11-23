@@ -6,10 +6,8 @@ import (
 	"github.com/sgnd/cuwan/internal/exchangex/hyperliquid"
 )
 
-// Native drivers must report order status, or the live loop never refills.
+// Both drivers implement the whole interface, order status and rules included.
 var (
-	_ OrderStatuser           = (*binance.Driver)(nil)
-	_ exchangex.RulesProvider = (*binance.Driver)(nil)
-	_ OrderStatuser           = (*hyperliquid.Driver)(nil)
-	_ exchangex.RulesProvider = (*hyperliquid.Driver)(nil)
+	_ exchangex.Exchange = (*binance.Driver)(nil)
+	_ exchangex.Exchange = (*hyperliquid.Driver)(nil)
 )

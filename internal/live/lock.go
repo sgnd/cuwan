@@ -8,7 +8,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/sgnd/cuwan/internal/home"
+	"path/filepath"
 )
 
 // ErrLocked means another process holds the bot's live lock.
@@ -18,21 +18,16 @@ var ErrLocked = errors.New("live: another process is running this bot")
 // for that bot. The OS drops it when the process dies.
 type Lock struct{ f *os.File }
 
-// TryLock takes the bot's lock without waiting.
-func TryLock(bot string) (*Lock, error) {
-	if _, err := home.Ensure(); err != nil {
-		return nil, err
-	}
-	p, err := home.Path("run-" + url.PathEscape(bot) + ".lock")
+// TryLock takes the bot's lock in dir without waiting.
+func TryLock(dir, bot string) (*Lock, error) {
+	p := filepath.Join(dir, "run-"+url.PathEscape(bot)+".lock")
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- the cuwan folder plus an escaped bot name
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+	fd := int(f.Fd()) // #nosec G115 -- a file descriptor fits an int
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, ErrLocked
 		}
@@ -46,37 +41,25 @@ func (l *Lock) Unlock() {
 	if l == nil || l.f == nil {
 		return
 	}
-	_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+	_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN) // #nosec G115 -- a file descriptor fits an int
 	_ = l.f.Close()
 	l.f = nil
 }
 
-func stopPath(bot string) (string, error) {
-	return home.Path("run-" + url.PathEscape(bot) + ".stop")
+func stopPath(dir, bot string) string {
+	return filepath.Join(dir, "run-"+url.PathEscape(bot)+".stop")
 }
 
 // RequestStop asks the process holding the lock to stop the bot.
-func RequestStop(bot string) error {
-	p, err := stopPath(bot)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(p, []byte("stop\n"), 0o600)
+func RequestStop(dir, bot string) error {
+	return os.WriteFile(stopPath(dir, bot), []byte("stop\n"), 0o600)
 }
 
 // StopRequested reports whether a stop was requested.
-func StopRequested(bot string) bool {
-	p, err := stopPath(bot)
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(p)
+func StopRequested(dir, bot string) bool {
+	_, err := os.Stat(stopPath(dir, bot))
 	return err == nil
 }
 
 // ClearStop removes a stop request.
-func ClearStop(bot string) {
-	if p, err := stopPath(bot); err == nil {
-		_ = os.Remove(p)
-	}
-}
+func ClearStop(dir, bot string) { _ = os.Remove(stopPath(dir, bot)) }

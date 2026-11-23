@@ -2,208 +2,140 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/sgnd/cuwan/internal/exchangex"
 	"github.com/sgnd/cuwan/internal/out"
 	"github.com/sgnd/cuwan/internal/store"
-	"github.com/sgnd/cuwan/internal/vault"
 )
 
-func cmdExchange(args []string) int {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stdout, "usage: cuwan exchange add|list|venues|test …")
-		return 0
-	}
-	switch args[0] {
-	case "add":
-		return exchangeAdd(args[1:])
-	case "list":
-		return exchangeList(args[1:])
-	case "venues":
-		return exchangeVenues(args[1:])
-	case "test":
-		return exchangeTest(args[1:])
-	default:
-		return out.Fail("exchange", fmt.Errorf("unknown verb %q", args[0]), 2)
-	}
+// markets each venue supports; the first is the default.
+var markets = map[string][]string{
+	"binance":     {exchangex.MarketSpot, exchangex.MarketUSDM},
+	"hyperliquid": {exchangex.MarketPerp},
 }
 
 func exchangeAdd(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("exchange.add", fmt.Errorf("usage: cuwan exchange add NAME --venue ID --secret secret:NAME [--market spot|usdm|perp]"), 2)
+	f, err := parse(args, []string{"venue", "market", "secret"}, []string{"testnet", "live"})
+	if err == nil {
+		_, err = needOne(f, "cuwan exchange add NAME --venue binance|hyperliquid --secret SECRET (--live | --testnet) [--market spot|usdm|perp]")
 	}
-	name := pos[0]
-	venue, _ := flagValue(args, "--venue")
-	if venue == "" {
-		if exchangex.Has(name) {
-			venue = name
-		}
+	if err == nil && f.set["live"] == f.set["testnet"] {
+		err = errors.New("say where it trades: --live (real money) or --testnet")
 	}
-	if venue == "" {
-		return out.Fail("exchange.add", fmt.Errorf("missing --venue (see: cuwan exchange venues)"), 2)
+	if err != nil {
+		return out.Fail("exchange.add", err, 2)
 	}
-	if !exchangex.Has(venue) {
-		return out.Fail("exchange.add", fmt.Errorf("unknown venue %q (see: cuwan exchange venues)", venue), 2)
+	ms, ok := markets[f.vals["venue"]]
+	if !ok {
+		return out.Fail("exchange.add", fmt.Errorf("--venue must be binance or hyperliquid"), 2)
 	}
-	secret, _ := flagValue(args, "--secret")
-	if secret == "" {
-		return out.Fail("exchange.add", fmt.Errorf("missing --secret secret:NAME"), 2)
-	}
-	if _, ok := vault.ParseRef(secret); !ok {
-		return out.Fail("exchange.add", fmt.Errorf("--secret must be secret:NAME"), 2)
-	}
-	market, _ := flagValue(args, "--market")
+	market := f.vals["market"]
 	if market == "" {
-		if info, ok := exchangex.Lookup(venue); ok && len(info.Markets) > 0 {
-			market = info.Markets[0]
-		} else {
-			market = exchangex.MarketSpot
+		market = ms[0]
+	}
+	if !contains(ms, market) {
+		return out.Fail("exchange.add", fmt.Errorf("%s has markets %s", f.vals["venue"], strings.Join(ms, ", ")), 2)
+	}
+	x := store.Exchange{Name: f.pos[0], Venue: f.vals["venue"], Market: market, Secret: f.vals["secret"], Testnet: f.set["testnet"], CreatedAt: time.Now().UTC()}
+	return withEnv("exchange.add", func(e *env) int {
+		err := e.st.Update(func(s *store.State) error {
+			if _, ok := s.Secrets[x.Secret]; !ok {
+				return fmt.Errorf("no secret %q; add it with `cuwan secret set %s`", x.Secret, x.Secret)
+			}
+			if _, ok := s.Exchanges[x.Name]; ok {
+				return fmt.Errorf("exchange %s exists", x.Name)
+			}
+			s.Exchanges[x.Name] = x
+			return s.Append(map[string]any{"command": "exchange.add", "name": x.Name, "venue": x.Venue, "agent": out.Agent()})
+		})
+		if err != nil {
+			return out.Fail("exchange.add", err, 1)
+		}
+		out.Print(os.Stdout, "exchange.add", x, fmt.Sprintf("added %s (%s %s testnet=%v)", x.Name, x.Venue, x.Market, x.Testnet))
+		return 0
+	})
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
 		}
 	}
-	e := &store.Exchange{
-		Name: name, Venue: venue, Market: market, SecretRef: secret,
-		Testnet: flagBool(args, "--testnet"),
-	}
-	if err := store.PutExchange(e); err != nil {
-		return out.Fail("exchange.add", err, 1)
-	}
-	_ = store.AppendAudit("exchange.add", map[string]any{"name": name, "venue": venue})
-	out.Print(os.Stdout, "exchange.add", map[string]any{
-		"name": name, "venue": venue, "market": market, "secret": out.SecretRef(strings.TrimPrefix(secret, "secret:")),
-	}, fmt.Sprintf("added exchange %s (%s/%s) %s", name, venue, market, out.SecretRef(strings.TrimPrefix(secret, "secret:"))))
-	return 0
+	return false
 }
 
 func exchangeList(args []string) int {
-	list, err := store.ListExchanges()
-	if err != nil {
-		if err == store.ErrNoStore {
-			out.Print(os.Stdout, "exchange.list", []any{}, "(none)")
-			return 0
-		}
-		return out.Fail("exchange.list", err, 1)
-	}
-	type row struct {
-		Name   string `json:"name"`
-		Venue  string `json:"venue"`
-		Market string `json:"market"`
-		Secret string `json:"secret"`
-	}
-	rows := make([]row, 0, len(list))
-	var lines []string
-	for _, e := range list {
-		ref := e.SecretRef
-		if n, ok := vault.ParseRef(ref); ok {
-			ref = out.SecretRef(n)
-		}
-		rows = append(rows, row{Name: e.Name, Venue: e.Venue, Market: e.Market, Secret: ref})
-		lines = append(lines, fmt.Sprintf("%s  %s/%s  %s", e.Name, e.Venue, e.Market, ref))
-	}
-	text := "(none)"
-	if len(lines) > 0 {
-		text = strings.Join(lines, "\n")
-	}
-	out.Print(os.Stdout, "exchange.list", rows, text)
-	return 0
-}
-
-func exchangeVenues(args []string) int {
-	list := exchangex.Venues()
-	type row struct {
-		ID           string   `json:"id"`
-		Kind         string   `json:"kind"`
-		Markets      []string `json:"markets"`
-		Backend      string   `json:"backend"`
-		PublicTicker bool     `json:"public_ticker"`
-		Live         string   `json:"live"`
-	}
-	rows := make([]row, 0, len(list))
-	var lines []string
-	for _, v := range list {
-		rows = append(rows, row{
-			ID: v.ID, Kind: v.Kind, Markets: v.Markets,
-			Backend: v.Backend, PublicTicker: v.PublicTicker, Live: v.Live,
+	return withEnv("exchange.list", func(e *env) int {
+		list := []store.Exchange{}
+		_ = e.st.View(func(s *store.State) error {
+			for _, x := range s.Exchanges {
+				list = append(list, x)
+			}
+			return nil
 		})
-		lines = append(lines, fmt.Sprintf("%-22s  %-3s  %-16s  %-10s  ticker=%v  live=%s",
-			v.ID, v.Kind, strings.Join(v.Markets, ","), v.Backend, v.PublicTicker, v.Live))
-	}
-	payload := map[string]any{"count": len(rows), "venues": rows}
-	text := fmt.Sprintf("%d venues\n%s", len(rows), strings.Join(lines, "\n"))
-	out.Print(os.Stdout, "exchange.venues", payload, text)
-	return 0
-}
-
-func exchangeTest(args []string) int {
-	pos := positional(args)
-	if len(pos) < 1 {
-		return out.Fail("exchange.test", fmt.Errorf("usage: cuwan exchange test NAME"), 2)
-	}
-	ex, drv, err := openExchange(pos[0], true)
-	if err != nil {
-		return out.Fail("exchange.test", err, 1)
-	}
-	_ = ex
-	ctx := context.Background()
-	symbol := "BTCUSDT"
-	if info, ok := exchangex.Lookup(drv.Name()); ok && info.Kind == exchangex.KindDEX && len(info.Markets) == 1 && info.Markets[0] == exchangex.MarketPerp {
-		symbol = "BTC"
-	}
-	if drv.Name() == "hyperliquid" {
-		symbol = "BTC"
-	}
-	if s, ok := flagValue(args, "--symbol"); ok {
-		symbol = s
-	}
-	t, err := drv.Ticker(ctx, symbol)
-	if err != nil {
-		return out.Fail("exchange.test", err, 1)
-	}
-	perms, err := drv.Permissions(ctx)
-	if err != nil {
-		return out.Fail("exchange.test", fmt.Errorf("cannot check API key permissions: %w", err), 1)
-	}
-	if perms.CanWithdraw {
-		return out.Fail("exchange.test", fmt.Errorf("API key appears withdrawal-capable; refuse live use and create a trade-only key"), 1)
-	}
-	out.Print(os.Stdout, "exchange.test", map[string]any{
-		"name": pos[0], "symbol": symbol, "price": t.Price, "permissions": perms,
-	}, fmt.Sprintf("ok %s %s = %g", pos[0], symbol, t.Price))
-	return 0
-}
-
-// openExchange is a seam so tests can swap in a fake driver.
-var openExchange = openNamedExchange
-
-func openNamedExchange(name string, paperOK bool) (*store.Exchange, exchangex.Exchange, error) {
-	e, err := store.GetExchange(name)
-	if err != nil {
-		return nil, nil, err
-	}
-	cfg := exchangex.Config{
-		Venue: e.Venue, Market: e.Market, Testnet: e.Testnet, Paper: paperOK,
-	}
-	if !paperOK {
-		secret, err := vault.ResolveRef(e.SecretRef)
-		if err != nil {
-			return nil, nil, err
+		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+		var lines []string
+		for _, x := range list {
+			lines = append(lines, fmt.Sprintf("%s  %s %s testnet=%v secret=%s", x.Name, x.Venue, x.Market, x.Testnet, out.SecretRef(x.Secret)))
 		}
-		// Secrets stay sealed refs in store; values resolve only for live drivers.
-		cfg.APIKey, cfg.APISecret = splitCred(secret, e.Venue)
-	}
-	drv, err := exchangex.Open(cfg)
-	return e, drv, err
+		out.Print(os.Stdout, "exchange.list", list, strings.Join(lines, "\n"))
+		return 0
+	})
 }
 
-func splitCred(secret, venue string) (key, sec string) {
-	if i := strings.IndexByte(secret, ':'); i > 0 {
-		return secret[:i], secret[i+1:]
+// driver opens the venue driver of an exchange with its key. The secret is
+// KEY:SECRET (Binance) or ADDRESS:PRIVATE_KEY (Hyperliquid).
+func (e *env) driver(name string) (store.Exchange, exchangex.Exchange, error) {
+	var x store.Exchange
+	var secret string
+	err := e.st.View(func(s *store.State) error {
+		var ok bool
+		if x, ok = s.Exchanges[name]; !ok {
+			return fmt.Errorf("no exchange %q", name)
+		}
+		secret = s.Secrets[x.Secret]
+		return nil
+	})
+	if err != nil {
+		return x, nil, err
 	}
-	if venue == "hyperliquid" {
-		return "", secret
+	key, sec, ok := strings.Cut(secret, ":")
+	if !ok {
+		return x, nil, fmt.Errorf("secret %s must be KEY:SECRET", x.Secret)
 	}
-	return secret, secret
+	d, err := openDriver(exchangex.Config{Venue: x.Venue, Market: x.Market, APIKey: key, APISecret: sec, Testnet: x.Testnet})
+	return x, d, err
+}
+
+// exchangeTest checks the key: it must read and must not withdraw.
+func exchangeTest(args []string) int {
+	f, err := parse(args, nil, nil)
+	if err == nil {
+		_, err = needOne(f, "cuwan exchange test NAME")
+	}
+	if err != nil {
+		return out.Fail("exchange.test", err, 2)
+	}
+	return withEnv("exchange.test", func(e *env) int {
+		_, d, err := e.driver(f.pos[0])
+		if err != nil {
+			return out.Fail("exchange.test", err, 1)
+		}
+		p, err := d.Permissions(context.Background())
+		if err != nil {
+			return out.Fail("exchange.test", fmt.Errorf("cannot check the key's permissions: %w", err), 1)
+		}
+		if p.CanWithdraw {
+			return out.Fail("exchange.test", fmt.Errorf("this key can withdraw or transfer funds; make a key without that right"), 1)
+		}
+		out.Print(os.Stdout, "exchange.test", p, fmt.Sprintf("ok: read=%v trade=%v withdraw=false", p.CanRead, p.CanTrade))
+		return 0
+	})
 }

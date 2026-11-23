@@ -33,6 +33,11 @@ func toGrid(v, unit float64, up bool) float64 {
 // safe side (buys down, sells up). Crossing orders (closes) round toward a
 // fill (sells down, buys up). Sizes round down and must reach MinQty.
 func roundReq(req exchangex.PlaceReq, r exchangex.SymbolRules, crossing bool) (exchangex.PlaceReq, error) {
+	for _, v := range []float64{req.Price, req.Qty} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return req, fmt.Errorf("live: order price %v or size %v is not a finite number", req.Price, req.Qty)
+		}
+	}
 	up := req.Side == "sell"
 	if crossing {
 		up = !up

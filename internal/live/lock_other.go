@@ -11,7 +11,7 @@ var ErrLocked = errors.New("live: another process is running this bot")
 type Lock struct{}
 
 // TryLock always fails: live runs need a unix system.
-func TryLock(string) (*Lock, error) {
+func TryLock(string, string) (*Lock, error) {
 	return nil, errors.New("live: live runs need macOS or Linux")
 }
 
@@ -19,10 +19,10 @@ func TryLock(string) (*Lock, error) {
 func (l *Lock) Unlock() {}
 
 // RequestStop always fails here.
-func RequestStop(string) error { return errors.New("live: live runs need macOS or Linux") }
+func RequestStop(string, string) error { return errors.New("live: live runs need macOS or Linux") }
 
 // StopRequested is always false here.
-func StopRequested(string) bool { return false }
+func StopRequested(string, string) bool { return false }
 
 // ClearStop does nothing.
-func ClearStop(string) {}
+func ClearStop(string, string) {}

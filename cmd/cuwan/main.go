@@ -6,10 +6,8 @@ import (
 	"os"
 
 	"github.com/sgnd/cuwan/internal/cli"
-	"github.com/sgnd/cuwan/internal/vault"
 )
 
 func main() {
-	vault.TakeUnlockEnv()
 	os.Exit(cli.Execute())
 }
