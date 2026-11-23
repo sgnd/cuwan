@@ -103,6 +103,15 @@ func trail(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store
 	} else {
 		n = -math.Ceil((lo - px) / step)
 	}
+	// On spot a falling price would pull the range down without end while the
+	// bot keeps buying: one range width is the most it may move down.
+	if !bot.Futures && lo+n*step-bot.Lower < -(bot.Upper-bot.Lower)-1e-9 {
+		rt.Meta["exit"] = "trail limit"
+		if err := Flatten(ctx, bot, ex, rt, save); err != nil {
+			return Result{}, true, &CloseError{Err: err}
+		}
+		return Result{Stopped: true, Reason: fmt.Sprintf("trail limit: the range would move more than one width below %g-%g", bot.Lower, bot.Upper)}, true, nil
+	}
 	if lo+n*step <= 0 {
 		return Result{}, true, fmt.Errorf("trail would move the range to %g or below; stop the bot", lo+n*step)
 	}

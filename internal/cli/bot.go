@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -72,10 +73,20 @@ func validBot(b *store.Bot, s *store.State) error {
 		return errors.New("--on-exit must be stop, pause or trail")
 	case b.TakeProfit > 0 && b.StopLoss > 0 && b.StopLoss >= b.TakeProfit:
 		return errors.New("--stop-loss must be below --take-profit")
-	case b.Leverage > 0 && x.Market == "spot":
+	}
+	for _, v := range []float64{b.Lower, b.Upper, b.OrderSize, b.QuoteAmount, b.Leverage, b.TakeProfit, b.StopLoss} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return errors.New("every number must be finite")
+		}
+	}
+	// Futures follows the exchange's market, never the leverage field.
+	b.Futures = x.Market != "spot"
+	switch {
+	case b.Futures && (b.Leverage < 1 || b.Leverage > live.MaxLeverage || b.Leverage != math.Trunc(b.Leverage)):
+		return fmt.Errorf("a futures exchange needs --leverage, a whole number from 1 to %g", live.MaxLeverage)
+	case !b.Futures && b.Leverage != 0:
 		return errors.New("--leverage is for futures; this exchange is spot")
 	}
-	b.Leverage = live.CapLeverage(b.Leverage)
 	return nil
 }
 
@@ -182,8 +193,8 @@ func botRm(args []string) int {
 	if err != nil {
 		return out.Fail("bot.rm", err, 2)
 	}
-	if !confirmed(f, "remove bot "+f.pos[0]+"?") {
-		return out.Fail("bot.rm", errNeedsPerson, 1)
+	if err := confirm(f, "cuwan bot rm "+f.pos[0], "remove bot "+f.pos[0]+"?"); err != nil {
+		return out.Fail("bot.rm", err, 1)
 	}
 	return withEnv("bot.rm", func(e *env) int {
 		err := e.st.Update(func(s *store.State) error {

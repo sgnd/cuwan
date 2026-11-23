@@ -31,3 +31,14 @@ func TestCleanErrDropsTheQuery(t *testing.T) {
 		}
 	}
 }
+
+// Low: a cleaned URL error does not unwrap to the inner error.
+func TestCleanURLErrorDoesNotUnwrap(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	u := srv.URL
+	srv.Close()
+	_, err := http.Get(u + "/x?signature=abc") // #nosec G107 -- local closed test server
+	if errors.Unwrap(CleanErr(err)) != nil {
+		t.Fatal("the cleaned error unwraps")
+	}
+}

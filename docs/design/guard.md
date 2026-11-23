@@ -7,6 +7,11 @@ fails if that file gains a package-level variable.
 
 ## Futures: preventive close
 
+A bot is a futures bot when its exchange's market is not spot, never because
+of its leverage field. A futures bot needs leverage, a whole number from 1
+to 20. Every input of the guard must be a finite number; a value that is not
+stops the bot.
+
 For the bot's own position (entry price `E`, leverage `L`, capped at 20x):
 
 1. Liquidation price:
@@ -43,7 +48,8 @@ liquidation near 97.5. The guard now closes earlier on purpose.
 ## Spot
 
 A spot bot stops and sells back what it bought when the price falls more
-than 5% below its range.
+than 5% below its range. With `--on-exit trail`, a spot range moves down at
+most one range width in total; past that the bot stops and sells back.
 
 ## Not covered
 

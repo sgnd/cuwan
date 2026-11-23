@@ -59,8 +59,12 @@ func Trigger(entry, venueLiq, lev float64, long bool) float64 {
 //   - futures: the mark price reached the trigger for the bot's own position
 //   - spot: the price is more than spotDrop below the range
 func guard(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store.Runtime, last float64) (string, error) {
-	if bot.Leverage <= 0 {
-		if lo, _ := Bounds(bot, rt); last < lo*(1-spotDrop) {
+	if !bot.Futures {
+		lo, _ := Bounds(bot, rt)
+		if math.IsNaN(last) || math.IsInf(last, 0) || math.IsNaN(lo) || math.IsInf(lo, 0) {
+			return "", fmt.Errorf("live: spot guard input is not a finite number (price %v, range %v); the bot stops", last, lo)
+		}
+		if last < lo*(1-spotDrop) {
 			return fmt.Sprintf("spot loss guard: price %g is more than %g%% below the range", last, spotDrop*100), nil
 		}
 		return "", nil
@@ -84,6 +88,13 @@ func guard(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *store
 	}
 	long := net > 0
 	t := Trigger(entry, p.LiquidationPrice, bot.Leverage, long)
+	// A value that is not a finite number would make every comparison
+	// false and switch the guard off: stop the bot instead.
+	for _, v := range []float64{entry, t, mark, bot.Leverage} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return "", fmt.Errorf("live: guard input is not a finite number (entry %v, trigger %v, mark %v, leverage %v); the bot stops", entry, t, mark, bot.Leverage)
+		}
+	}
 	if (long && mark <= t) || (!long && mark >= t) {
 		return fmt.Sprintf("preventive close: mark %g reached %g, before liquidation", mark, t), nil
 	}

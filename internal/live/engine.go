@@ -424,7 +424,7 @@ func CancelAll(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *s
 // futures position, or the free base asset on spot (only a long can be
 // closed there).
 func covered(ctx context.Context, bot *store.Bot, ex exchangex.Exchange) (float64, error) {
-	if bot.Leverage > 0 {
+	if bot.Futures {
 		p, err := position(ctx, bot, ex)
 		return p.Size, err
 	}
@@ -452,7 +452,7 @@ func closeNet(ctx context.Context, bot *store.Bot, ex exchangex.Exchange, rt *st
 	if math.Abs(start) < eps {
 		return nil
 	}
-	futures := bot.Leverage > 0
+	futures := bot.Futures
 	if !futures && start < 0 {
 		return fmt.Errorf("the bot sold %g more than it bought on spot; nothing to sell back, check the venue", -start)
 	}

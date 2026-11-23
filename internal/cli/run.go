@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,8 +78,18 @@ func start(e *env, f *flags) int {
 	if exchangex.TestnetOnly(x.Venue) && !x.Testnet {
 		return out.Fail("run.start", fmt.Errorf("%s runs on its testnet only until its testnet run is recorded; add the exchange with --testnet", x.Venue), 1)
 	}
-	if !confirmed(f, fmt.Sprintf("start live bot %s on %s (%s) at about %g?", bot.Name, x.Name, x.Venue, t.Price)) {
-		return out.Fail("run.start", errNeedsPerson, 1)
+	size := fmt.Sprintf("%g per order", bot.OrderSize)
+	if bot.OrderSize == 0 {
+		size = fmt.Sprintf("%g quote per order", bot.QuoteAmount)
+	}
+	lev := "spot"
+	if bot.Futures {
+		lev = fmt.Sprintf("%gx futures", live.CapLeverage(bot.Leverage))
+	}
+	q := fmt.Sprintf("start live bot %s on %s (%s, %s, %s, %d levels %g-%g) at about %g?",
+		bot.Name, x.Name, x.Venue, lev, size, bot.Levels, bot.Lower, bot.Upper, t.Price)
+	if err := confirm(f, "cuwan run start "+bot.Name, q); err != nil {
+		return out.Fail("run.start", err, 1)
 	}
 	// Fail closed: a live run needs a key proven unable to withdraw.
 	p, err := drv.Permissions(ctx)
@@ -101,7 +112,7 @@ func start(e *env, f *flags) int {
 	if had && prev.Status != "stopped" {
 		return resume(e, &bot, drv, &prev)
 	}
-	if bot.Leverage > 0 {
+	if bot.Futures {
 		if err := drv.SetLeverage(ctx, bot.Symbol, live.CapLeverage(bot.Leverage)); err != nil {
 			return out.Fail("run.start", err, 1)
 		}
@@ -250,8 +261,8 @@ func runStop(args []string) int {
 	if err != nil {
 		return out.Fail("run.stop", err, 2)
 	}
-	if !confirmed(f, "stop live bot "+f.pos[0]+"?") {
-		return out.Fail("run.stop", errNeedsPerson, 1)
+	if err := confirm(f, "cuwan run stop "+strings.Join(args, " "), "stop live bot "+f.pos[0]+"?"); err != nil {
+		return out.Fail("run.stop", err, 1)
 	}
 	return withEnv("run.stop", func(e *env) int { return stop(e, f.pos[0], f.set["flatten"]) })
 }

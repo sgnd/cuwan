@@ -67,7 +67,8 @@ type Bot struct {
 	Levels      int     `json:"levels"`
 	OrderSize   float64 `json:"order_size,omitempty"`   // base asset per order
 	QuoteAmount float64 `json:"quote_amount,omitempty"` // quote asset per order
-	Leverage    float64 `json:"leverage,omitempty"`     // futures only
+	Leverage    float64 `json:"leverage,omitempty"`     // futures only, 1 to 20
+	Futures     bool    `json:"futures,omitempty"`      // from the exchange market; drives the guard
 	OnExit      string  `json:"on_exit,omitempty"`      // stop | pause | trail
 	TakeProfit  float64 `json:"take_profit,omitempty"`
 	StopLoss    float64 `json:"stop_loss,omitempty"`

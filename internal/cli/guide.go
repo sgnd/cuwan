@@ -18,13 +18,15 @@ const guideText = `cuwan agent playbook
 3. Secrets come from stdin only: printf '%s' "$KEY:$SECRET" | cuwan secret set NAME.
    Output shows [hidden] and [secret:NAME], never a value.
 4. Venues: binance (spot, usdm) live; hyperliquid (perp) on --testnet only.
-   cuwan exchange add NAME --venue binance --market usdm --secret NAME
+   cuwan exchange add NAME --venue binance --market usdm --secret NAME --testnet (or --live)
 5. Bots need a size: --order-size (base asset) or --quote-amount (quote asset).
    cuwan bot add NAME --exchange EX --symbol SYM --lower N --upper N --levels N --order-size N
    Range exits: --on-exit stop|pause|trail (pause is the default), --take-profit, --stop-loss.
 6. Leverage is capped at 20x. The preventive close before liquidation is always on.
 7. cuwan run start NAME --dry-run is always allowed. A live start, run stop and rm need
-   a person's yes: an agent passes --yes only when a person approved it in this session.
+   a person who types the yes at their terminal. An agent gets NEEDS_PERSON with the
+   command to show the person; --yes does not change that.
+   A futures exchange needs --leverage, a whole number from 1 to 20.
 8. cuwan guide install --project (or --dry-run) adds the skill for agents; the home-wide
    install is for a person.`
 

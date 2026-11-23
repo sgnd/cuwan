@@ -54,7 +54,7 @@ cd cuwan && make build
 ```bash
 cuwan doctor                              # make ~/.cuwan and check the key store
 printf '%s' "$API_KEY:$API_SECRET" | cuwan secret set binance-main
-cuwan exchange add binance --venue binance --market usdm --secret binance-main
+cuwan exchange add binance --venue binance --market usdm --secret binance-main --live
 cuwan exchange test binance               # the key must not be able to withdraw
 cuwan bot add btc-grid --exchange binance --symbol BTCUSDT \
   --lower 90000 --upper 110000 --levels 10 --order-size 0.001 --leverage 3
@@ -71,7 +71,10 @@ run by client order ID. When the price leaves the range, `--on-exit pause`
 
 ## Safety
 
-- Live orders need a person's yes; an AI agent cannot give it.
+- Live orders, stops and removals need a person, who types the yes at their
+  terminal; an AI agent gets NEEDS_PERSON, with or without `--yes`.
+- An exchange says where it trades: `--live` or `--testnet`. A futures
+  exchange needs `--leverage`, a whole number from 1 to 20.
 - cuwan refuses a key that can withdraw or transfer funds.
 - Leverage is capped at 20x.
 - The preventive close reads the venue's mark price and fires before the

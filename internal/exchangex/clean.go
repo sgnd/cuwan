@@ -24,7 +24,7 @@ func CleanErr(err error, secrets ...string) error {
 		if inner == nil {
 			inner = errors.New("failed")
 		}
-		return &cleaned{msg: ue.Op + " " + where + ": " + Redact(inner.Error(), secrets...), err: inner}
+		return &cleaned{msg: ue.Op + " " + where + ": " + Redact(inner.Error(), secrets...)}
 	}
 	var keep error // only the sentinel survives, never the raw error text
 	if errors.Is(err, ErrOrderNotFound) {

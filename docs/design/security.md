@@ -29,6 +29,9 @@ person's yes.
   macOS keychain (`security -i` reads the command from stdin, so the key is
   never on a command line) or the Linux Secret Service (`secret-tool`).
 - No passphrase mode and no key file. When the key store fails, cuwan stops.
+- macOS: the item trusts no app (`-T ""`), so every read of the key asks the
+  person. Linux: the Secret Service gives the key to any process of the
+  user once the keyring is unlocked; that is a known limit.
 - Windows has no backend yet, so there is no Windows build (CW26).
 
 ## Secrets
@@ -42,10 +45,11 @@ person's yes.
 
 ## Agents
 
-- `run start`, `run stop`, `bot rm` and `secret rm` need a person's yes: a
-  terminal answer, or `--yes`. An agent (`CUWAN_AGENT=1`, or no terminal)
-  is never prompted, and the rules for agents say to pass `--yes` only after
-  a person approved.
+- `run start`, `run stop`, `bot rm` and `secret rm` need a person. An agent
+  (`CUWAN_AGENT=1`, or output that is not a terminal) gets NEEDS_PERSON with
+  the command, with or without `--yes`. The person's answer is read from
+  `/dev/tty`, never from stdin; without a terminal there is no yes. `--yes`
+  only skips the question for a person at a terminal.
 - A live run refuses a key that can withdraw or transfer, and refuses when
   the permission check fails.
 - `guide install` writes into the home folder only for a person; an agent

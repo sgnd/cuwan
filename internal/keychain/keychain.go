@@ -67,7 +67,8 @@ func tools(goos string) (get func() ([]byte, error), put func(string) error, err
 		}
 		// security -i reads the command from stdin, so the key is not on a command line.
 		put = func(h string) error {
-			_, err := run(fmt.Sprintf("add-generic-password -s %s -a %s -w %s\n", service, account, h), "security", "-i")
+			// -T "" trusts no app, so every read of the key asks the person.
+			_, err := run(fmt.Sprintf("add-generic-password -s %s -a %s -T \"\" -w %s\n", service, account, h), "security", "-i")
 			return err
 		}
 	case "linux":

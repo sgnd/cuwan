@@ -105,3 +105,25 @@ func TestCreateIsGenerated(t *testing.T) {
 		t.Fatal("two created keys are equal")
 	}
 }
+
+// Audit MEDIUM: on macOS the item lists no trusted app, so every read of the
+// key asks the person.
+func TestMacItemTrustsNoApp(t *testing.T) {
+	f := &fake{}
+	f.install(t)
+	if _, err := key("darwin", true); err != nil {
+		t.Fatal(err)
+	}
+	added := false
+	for _, in := range f.stdin {
+		if strings.Contains(in, "add-generic-password") {
+			added = true
+			if !strings.Contains(in, ` -T "" `) {
+				t.Fatalf("no empty trusted-app list: %q", strings.ReplaceAll(in, f.item, "KEY"))
+			}
+		}
+	}
+	if !added {
+		t.Fatal("no item was added")
+	}
+}

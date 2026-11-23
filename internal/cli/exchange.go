@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -20,9 +21,12 @@ var markets = map[string][]string{
 }
 
 func exchangeAdd(args []string) int {
-	f, err := parse(args, []string{"venue", "market", "secret"}, []string{"testnet"})
+	f, err := parse(args, []string{"venue", "market", "secret"}, []string{"testnet", "live"})
 	if err == nil {
-		_, err = needOne(f, "cuwan exchange add NAME --venue binance|hyperliquid --secret SECRET [--market spot|usdm|perp] [--testnet]")
+		_, err = needOne(f, "cuwan exchange add NAME --venue binance|hyperliquid --secret SECRET (--live | --testnet) [--market spot|usdm|perp]")
+	}
+	if err == nil && f.set["live"] == f.set["testnet"] {
+		err = errors.New("say where it trades: --live (real money) or --testnet")
 	}
 	if err != nil {
 		return out.Fail("exchange.add", err, 2)

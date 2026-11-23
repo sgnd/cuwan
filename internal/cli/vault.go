@@ -96,8 +96,8 @@ func secretRm(args []string) int {
 	if err != nil {
 		return out.Fail("secret.rm", err, 2)
 	}
-	if !confirmed(f, "remove secret "+f.pos[0]+"?") {
-		return out.Fail("secret.rm", errNeedsPerson, 1)
+	if err := confirm(f, "cuwan secret rm "+f.pos[0], "remove secret "+f.pos[0]+"?"); err != nil {
+		return out.Fail("secret.rm", err, 1)
 	}
 	return withEnv("secret.rm", func(e *env) int {
 		err := e.st.Update(func(s *store.State) error {

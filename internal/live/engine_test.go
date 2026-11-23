@@ -289,6 +289,7 @@ func TestSpotLossGuard(t *testing.T) {
 func futBot() *store.Bot {
 	bot := *gridBot
 	bot.Leverage = 20
+	bot.Futures = true
 	return &bot
 }
 
@@ -431,7 +432,7 @@ func (b *book) Rules(context.Context, string) (exchangex.SymbolRules, error) {
 }
 
 func (b *book) MarkPrice(context.Context, string) (float64, error) {
-	if b.mark > 0 {
+	if b.mark != 0 { // NaN included
 		return b.mark, nil
 	}
 	return b.price, nil

@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +30,10 @@ var Version = "dev"
 var (
 	masterKey  = keychain.Key
 	openDriver = exchangex.Open
+	isAgent    = out.Agent
+	openTTY    = func() (io.ReadWriteCloser, error) {
+		return os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	}
 )
 
 // handler runs one command with the arguments after its name.
@@ -196,8 +202,8 @@ func parse(args []string, valued, bools []string) (*flags, error) {
 
 func (f *flags) num(name string) (float64, error) {
 	v, err := strconv.ParseFloat(f.vals[name], 64)
-	if err != nil {
-		return 0, fmt.Errorf("--%s must be a number", name)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("--%s must be a finite number", name)
 	}
 	return v, nil
 }
@@ -210,20 +216,28 @@ func needOne(f *flags, usage string) (string, error) {
 	return f.pos[0], nil
 }
 
-// confirmed reports whether a person approved: --yes, or a yes at the
-// terminal. An agent without --yes is never approved.
-func confirmed(f *flags, question string) bool {
+// confirm asks the person at the terminal. An AI agent never gives the
+// yes, with or without --yes: it gets NEEDS_PERSON and the command for the
+// person to type. The answer is read from the terminal device, never from
+// stdin, and without a terminal there is no yes. --yes skips the question
+// only for a person at a terminal.
+func confirm(f *flags, command, question string) error {
+	if isAgent() {
+		return fmt.Errorf("NEEDS_PERSON: a person runs this at their terminal: %s", command)
+	}
+	tty, err := openTTY()
+	if err != nil {
+		return fmt.Errorf("this needs a person at a terminal (%v); nothing was done", err)
+	}
+	defer func() { _ = tty.Close() }()
 	if f.set["yes"] {
-		return true
+		return nil
 	}
-	if out.Agent() {
-		return false
-	}
-	fmt.Fprintf(os.Stderr, "%s [y/N] ", question)
-	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	_, _ = fmt.Fprintf(tty, "%s [y/N] ", question)
+	line, _ := bufio.NewReader(tty).ReadString('\n')
 	line = strings.ToLower(strings.TrimSpace(line))
-	return line == "y" || line == "yes"
+	if line == "y" || line == "yes" {
+		return nil
+	}
+	return errors.New("not confirmed; nothing was done")
 }
-
-// errNeedsPerson is the error for an agent that has no person's yes.
-var errNeedsPerson = errors.New("NEEDS_PERSON: this needs a person's yes; pass --yes only when a person approved it")
